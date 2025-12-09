@@ -54,10 +54,9 @@ class AV2Dataset(Dataset):
         # folder under data_root / split
         self.log_dirs = sorted((self.data_root / split).glob("*"))
         self.cache_dir = (
-            self.data_root / "cache" / split
-            if preprocess_dir is None
-            else Path(preprocess_dir)
+            self.data_root if preprocess_dir is None else Path(preprocess_dir)
         )
+        self.cache_dir = self.cache_dir / "cache" / split
         if self.preprocess:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -196,8 +195,13 @@ class AV2Dataset(Dataset):
         cache_file = self.cache_dir / f"{log_id}.pt" if self.preprocess else None
 
         if cache_file is not None and cache_file.exists():
-            sample = torch.load(cache_file, map_location="cpu")
+            sample = torch.load(cache_file, map_location="cpu", weights_only=True)
             return sample
+            # try:
+            #     sample = torch.load(cache_file, map_location="cpu")
+            #     return sample
+            # except Exception:
+            #     print(f"Warning: failed to load cache file {cache_file}, rebuilding...")
 
         if not json_file.exists():
             raise FileNotFoundError(f"{json_file} not found")

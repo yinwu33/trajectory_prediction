@@ -5,12 +5,12 @@ train_split: train
 val_split: val
 test_split: test
 
-batch_size: 64
-num_workers: 16
+batch_size: 128
+num_workers: 8
 pin_memory: true
 
 preprocess: true
-preprocess_dir: ./data_ssd/cache/
+preprocess_dir: ./data_ssd/
 history_steps: 50
 future_steps: 60
 max_agents: 64
