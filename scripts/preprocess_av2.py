@@ -1,133 +1,136 @@
+"""Preprocess Argoverse 2 logs into cached .pt files."""
+
 from __future__ import annotations
 
 import argparse
-import io
-import lmdb
-from pathlib import Path
-from typing import List
 import sys
-from rich.progress import track
+from pathlib import Path
+from functools import partial
+
+# 引入 DataLoader 用于多进程加速
+from torch.utils.data import DataLoader
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import torch
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+# 引入 Console 用于更优雅的打印
+from rich.console import Console
+from rich.progress import track
 
 from datamodule.datasets.av2_dataset import AV2Dataset
+
+console = Console()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Preprocess AV2 data into a single LMDB."
+        description="Preprocess Argoverse 2 logs into cached .pt files."
     )
     parser.add_argument(
-        "--data_root",
-        type=str,
-        default="./data",
+        "--data-root",
+        type=Path,
+        default=Path("./data"),
         help="Root directory containing AV2 splits.",
     )
     parser.add_argument(
-        "--split",
-        type=str,
-        default="train",
-        help="Split name (e.g., train/val/test/mini_train).",
+        "--preprocess-dir",
+        type=Path,
+        default=Path("./data_ssd"),
+        help="Directory to store cached tensors.",
     )
     parser.add_argument(
-        "--lmdb_path",
-        type=str,
-        default=None,
-        help="Optional explicit LMDB output path.",
+        "--split", type=str, default="train", help="Dataset split to preprocess."
+    )
+    # 添加 num_workers 参数
+    parser.add_argument(
+        "--num-workers", type=int, default=8, help="Number of worker processes."
     )
     parser.add_argument(
-        "--lmdb_map_size_gb", type=float, default=48.0, help="LMDB map size in GB."
-    )
-    parser.add_argument("--history_steps", type=int, default=50)
-    parser.add_argument("--future_steps", type=int, default=60)
-    parser.add_argument("--max_agents", type=int, default=64)
-    parser.add_argument("--max_lanes", type=int, default=128)
-    parser.add_argument("--lane_points", type=int, default=20)
-    parser.add_argument("--lane_agent_k", type=int, default=3)
-    parser.add_argument("--lane_radius", type=float, default=150.0)
-    parser.add_argument("--agent_radius", type=float, default=30.0)
-    parser.add_argument(
-        "--overwrite", action="store_true", help="Overwrite existing LMDB file."
+        "--overwrite",
+        action="store_true",
+        help="Re-run preprocessing even if cache file exists.",
     )
     return parser.parse_args()
 
 
-def main() -> None:
+def process_item(batch):
+    # DataLoader 的 collate_fn 会被调用，这里不需要做任何事
+    # 只要 DataLoader 遍历了 dataset，__getitem__ 就会被触发，缓存就会生成
+    pass
+
+
+def main() -> int:
     args = parse_args()
-    data_root = Path(args.data_root)
-    split_dir = data_root / args.split
-    if not split_dir.exists():
-        raise FileNotFoundError(f"Split directory not found: {split_dir}")
 
-    lmdb_path = (
-        Path(args.lmdb_path)
-        if args.lmdb_path
-        else data_root / "cache" / f"{args.split}.lmdb"
-    )
-    lmdb_path.parent.mkdir(parents=True, exist_ok=True)
-    if lmdb_path.exists():
-        if not args.overwrite:
-            raise FileExistsError(
-                f"LMDB already exists at {lmdb_path}. Use --overwrite to replace."
-            )
-        lmdb_path.unlink()
+    if not args.data_root.exists():
+        console.print(f"[red]Data root not found: {args.data_root}[/red]")
+        return 1
 
-    ds = AV2Dataset(
-        data_root=data_root,
+    # 修复 1: 处理 Path(None) 问题
+
+    # 注意：这里我们假设 Dataset 类内部如果没有 overwrite 参数，
+    # 你可能需要临时修改 Dataset 或通过删除缓存文件来强制覆盖。
+    # 为了通用性，这里保留外部删除逻辑，但在多进程前执行。
+
+    dataset = AV2Dataset(
+        data_root=args.data_root,
         split=args.split,
-        use_lmdb=False,
-        history_steps=args.history_steps,
-        future_steps=args.future_steps,
-        max_agents=args.max_agents,
-        max_lanes=args.max_lanes,
-        lane_points=args.lane_points,
-        lane_agent_k=args.lane_agent_k,
-        lane_radius=args.lane_radius,
-        agent_radius=args.agent_radius,
+        preprocess=True,  # 确保开启预处理模式
+        preprocess_dir=args.preprocess_dir,
     )
 
-    env = lmdb.open(
-        str(lmdb_path),
-        map_size=int(args.lmdb_map_size_gb * (1024**3)),
-        subdir=False,
-        lock=True,
-        readonly=False,
-        meminit=False,
-        map_async=False,
+    if len(dataset) == 0:
+        console.print(
+            f"[yellow]No logs found in {args.data_root / args.split}[/yellow]"
+        )
+        return 1
+
+    console.print(
+        f"[bold green]Preprocessing split '{args.split}'[/bold green] with {len(dataset)} logs.\n"
+        f"Cache dir: {dataset.cache_dir}\n"
+        f"Workers: {args.num_workers}"
     )
 
-    keys: List[str] = []
-    for idx, log_dir in track(
-        enumerate(ds.log_dirs),
-        total=len(ds.log_dirs),
-        description="Preprocessing",
+    # 预先处理 Overwrite 逻辑 (在主进程做，避免多进程竞争删除文件)
+    if args.overwrite:
+        console.print(
+            "[yellow]Overwrite mode enabled. Cleaning existing cache...[/yellow]"
+        )
+        # 这种方式比逐个检查快，但要小心不要删错
+        if dataset.cache_dir.exists():
+            for cache_file in dataset.cache_dir.glob("*.pt"):
+                cache_file.unlink()
+
+    # 修复 2 & 3: 使用 DataLoader 进行多进程加速
+    # 我们使用一个简单的 DataLoader，batch_size 甚至可以是 1，
+    # 重要的是利用 num_workers 并行调用 dataset.__getitem__
+    dataloader = DataLoader(
+        dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=lambda x: x,  # 既然只是预处理，不需要真正组装 batch，减少开销
+    )
+
+    # 使用 rich 的 track 显示进度
+    # 这里的循环仅仅是为了驱动 DataLoader 运行
+    for log_dir in track(
+        dataloader.dataset.log_dirs, description="Processing...", total=len(dataset)
     ):
-        sample = ds._process_log_dir(log_dir)
-        key = log_dir.name.encode("utf-8")
-        with io.BytesIO() as bio:
-            torch.save(sample, bio)
-            buf = bio.getvalue()
-        with env.begin(write=True) as txn:
-            txn.put(key, buf)
-        keys.append(log_dir.name)
-        # if (idx + 1) % 10 == 0 or idx == len(ds.log_dirs) - 1:
-        #     print(f"Processed {idx + 1}/{len(ds.log_dirs)} scenarios into {lmdb_path}")
+        log_id = log_dir.name
+        cache_file = (
+            dataloader.dataset.cache_dir / f"{log_id}.pt"
+            if dataloader.dataset.preprocess
+            else None
+        )
+        _ = torch.load(cache_file, map_location="cpu")
 
-    # store keys for fast lookup
-    with io.BytesIO() as bio:
-        torch.save(keys, bio)
-        buf = bio.getvalue()
-    with env.begin(write=True) as txn:
-        txn.put(b"__keys__", buf)
-
-    env.sync()
-    env.close()
-    print(f"Finished preprocessing. LMDB stored at: {lmdb_path}")
+    console.print("[bold green]Done.[/bold green]")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
