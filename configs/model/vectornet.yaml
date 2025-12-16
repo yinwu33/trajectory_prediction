@@ -1,4 +1,4 @@
-_target_: models.VectorNetTrajPred
+_target_: models.VectorNet
 
 hidden_dim: 128
 global_layers: 1

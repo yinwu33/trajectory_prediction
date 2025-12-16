@@ -102,6 +102,7 @@ def plot_scenario(
             label="target future",
         )
         ax.scatter(gt_coords[-1, 0], gt_coords[-1, 1], color="#2ca02c", s=25)
+        
 
     # Model prediction
     if pred_np is not None:
@@ -163,6 +164,12 @@ def plot_scenario(
                 alpha=0.9,
                 label="others future" if not plotted else None,
             )
+            # ax.scatter(
+            #     traj[-1, 0],
+            #     traj[-1, 1],
+            #     color="#9ed9a0",
+            #     s=25,
+            # )
             plotted = True
 
     # Other agents predictions (lighter)

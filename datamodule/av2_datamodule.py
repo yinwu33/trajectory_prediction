@@ -78,11 +78,14 @@ class AV2Datamodule(pl.LightningDataModule):
         )
 
         if stage in ("fit", None):
-            self.train_dataset = AV2Dataset(split=self.train_split, **common_kwargs)
-            self.val_dataset = AV2Dataset(split=self.val_split, **common_kwargs)
+            self.train_dataset = AV2Dataset(
+                split=self.train_split, **common_kwargs)
+            self.val_dataset = AV2Dataset(
+                split=self.val_split, **common_kwargs)
 
         if stage in ("test", None):
-            self.test_dataset = AV2Dataset(split=self.test_split, **common_kwargs)
+            self.test_dataset = AV2Dataset(
+                split=self.test_split, **common_kwargs)
 
     def collate_fn(self, batch: List[Dict]):
         lane_offset = 0
@@ -90,25 +93,34 @@ class AV2Datamodule(pl.LightningDataModule):
 
         lane_points = []
         agent_history = []
+        agent_history_mask = []
+        agent_future = []
+        agent_future_mask = []
         lane_lane_edges = []
         agent_agent_edges = []
         lane_agent_edges = []
         target_indices = []
         target_last_pos = []
+        agent_last_pos = []
         target_gt = []
         scenario_ids = []
+        centroid = []
         lane_counts = []
         agent_counts = []
 
         for sample in batch:
             lane_points.append(sample["lane_points"])
             agent_history.append(sample["agent_history"])
-            
+            agent_history_mask.append(sample["agent_history_mask"])
+            agent_future.append(sample["agent_future"])
+            agent_future_mask.append(sample["agent_future_mask"])
+
             lane_counts.append(int(sample["lane_points"].shape[0]))
             agent_counts.append(int(sample["agent_history"].shape[0]))
 
             if sample["edge_index_lane_to_lane"].numel() > 0:
-                lane_lane_edges.append(sample["edge_index_lane_to_lane"] + lane_offset)
+                lane_lane_edges.append(
+                    sample["edge_index_lane_to_lane"] + lane_offset)
             if sample["edge_index_agent_to_agent"].numel() > 0:
                 agent_agent_edges.append(
                     sample["edge_index_agent_to_agent"] + agent_offset
@@ -121,8 +133,10 @@ class AV2Datamodule(pl.LightningDataModule):
 
             target_indices.append(sample["target_agent_idx"] + agent_offset)
             target_last_pos.append(sample["target_last_pos"])
+            agent_last_pos.append(sample["agent_last_pos"])
             target_gt.append(sample["target_gt"])
             scenario_ids.append(sample.get("scenario_id", ""))
+            centroid.append(sample["centroid"])
 
             lane_offset += sample["lane_points"].shape[0]
             agent_offset += sample["agent_history"].shape[0]
@@ -143,6 +157,15 @@ class AV2Datamodule(pl.LightningDataModule):
             "agent_history": _concat_tensors(
                 agent_history, dim=0, empty_shape=(0, self.history_steps, 7)
             ).float(),
+            "agent_history_mask": _concat_tensors(
+                agent_history_mask, dim=0, empty_shape=(0, self.history_steps)
+            ),
+            "agent_future": _concat_tensors(
+                agent_future, dim=0, empty_shape=(0, self.future_steps, 2)
+            ).float(),
+            "agent_future_mask": _concat_tensors(
+                agent_future_mask, dim=0, empty_shape=(0, self.future_steps)
+            ),
             "edge_index_lane_to_lane": _concat_tensors(
                 lane_lane_edges, dim=1, empty_shape=(2, 0)
             ).long(),
@@ -162,10 +185,20 @@ class AV2Datamodule(pl.LightningDataModule):
                 if len(target_last_pos) > 0
                 else torch.zeros((0, 2))
             ),
+            "agent_last_pos": _concat_tensors(
+                agent_last_pos,
+                dim=0,
+                empty_shape=(0, 2)
+            ),
             "target_gt": (
                 torch.stack(target_gt)
                 if len(target_gt) > 0
                 else torch.zeros((0, self.future_steps, 2))
+            ),
+            "centroid": (
+                torch.stack(centroid)
+                if len(centroid) > 0
+                else torch.zeros((0, 2))
             ),
             "scenario_ids": scenario_ids,
             "lane_counts": lane_counts,

@@ -121,8 +121,10 @@ class VectorNetBackbone(nn.Module):
         agent_feat = self.agent_encoder(agent_points)
 
         for layer in self.global_layers:
-            lane_feat = lane_feat + layer["lane_lane"](lane_feat, edge_lane_lane)
-            agent_feat = agent_feat + layer["agent_agent"](agent_feat, edge_agent_agent)
+            lane_feat = lane_feat + \
+                layer["lane_lane"](lane_feat, edge_lane_lane)
+            agent_feat = agent_feat + \
+                layer["agent_agent"](agent_feat, edge_agent_agent)
             # lanes send messages into agents
             agent_feat = agent_feat + layer["lane_agent"](
                 agent_feat, edge_lane_agent, source_feat=lane_feat
@@ -154,7 +156,7 @@ class TrajectoryDecoder(nn.Module):
         return out.view(agent_feat.shape[0], self.future_steps, self.coord_dim)
 
 
-class VectorNetTrajPred(pl.LightningModule):
+class VectorNetTrajPred(nn.Module):
     def __init__(
         self,
         hidden_dim: int = 128,
@@ -164,7 +166,6 @@ class VectorNetTrajPred(pl.LightningModule):
         lr: float = 1e-4,
     ):
         super().__init__()
-        self.save_hyperparameters()
         self.backbone = VectorNetBackbone(
             hidden_dim=hidden_dim, global_layers=global_layers, dropout=dropout
         )
@@ -186,30 +187,33 @@ class VectorNetTrajPred(pl.LightningModule):
         pred = self.decoder(target_feat)
         return pred + batch["target_last_pos"].unsqueeze(1)
 
-    def training_step(self, batch: dict, batch_idx: int):
-        pred = self(batch)
-        loss = F.smooth_l1_loss(pred, batch["target_gt"])
-        self.log(
-            "train/loss",
-            loss,
-            prog_bar=True,
-            on_step=True,
-            on_epoch=True,
-            batch_size=batch["target_gt"].shape[0],
-        )
-        return loss
+    def loss(self, pred, batch) -> dict:
+        return F.smooth_l1_loss(pred, batch["target_gt"])
 
-    def validation_step(self, batch: dict, batch_idx: int):
-        pred = self(batch)
-        loss = F.smooth_l1_loss(pred, batch["target_gt"])
-        self.log(
-            "val/loss", loss, prog_bar=True, batch_size=batch["target_gt"].shape[0]
-        )
+    # def training_step(self, batch: dict, batch_idx: int):
+    #     pred = self(batch)
+    #     loss = F.smooth_l1_loss(pred, batch["target_gt"])
+    #     self.log(
+    #         "train/loss",
+    #         loss,
+    #         prog_bar=True,
+    #         on_step=True,
+    #         on_epoch=True,
+    #         batch_size=batch["target_gt"].shape[0],
+    #     )
+    #     return loss
 
-    def test_step(self, batch: dict, batch_idx: int):
-        pred = self(batch)
-        loss = F.smooth_l1_loss(pred, batch["target_gt"])
-        self.log("test/loss", loss, batch_size=batch["target_gt"].shape[0])
+    # def validation_step(self, batch: dict, batch_idx: int):
+    #     pred = self(batch)
+    #     loss = F.smooth_l1_loss(pred, batch["target_gt"])
+    #     self.log(
+    #         "val/loss", loss, prog_bar=True, batch_size=batch["target_gt"].shape[0]
+    #     )
 
-    def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.lr)
+    # def test_step(self, batch: dict, batch_idx: int):
+    #     pred = self(batch)
+    #     loss = F.smooth_l1_loss(pred, batch["target_gt"])
+    #     self.log("test/loss", loss, batch_size=batch["target_gt"].shape[0])
+
+    # def configure_optimizers(self):
+    #     return torch.optim.Adam(self.parameters(), lr=self.lr)

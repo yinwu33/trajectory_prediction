@@ -192,14 +192,17 @@ class AV2Dataset(Dataset):
         log_id = log_dir.name
         json_file = log_dir / f"log_map_archive_{log_id}.json"
         parquet_file = log_dir / f"scenario_{log_id}.parquet"
-        cache_file = self.cache_dir / f"{log_id}.pt" if self.preprocess else None
+        cache_file = self.cache_dir / \
+            f"{log_id}.pt" if self.preprocess else None
 
         if cache_file is not None and cache_file.exists():
             try:
-                sample = torch.load(cache_file, map_location="cpu", weights_only=True)
+                sample = torch.load(
+                    cache_file, map_location="cpu", weights_only=False)
                 return sample
             except Exception:
-                print(f"Warning: failed to load cache file {cache_file}, rebuilding...")
+                print(
+                    f"Warning: failed to load cache file {cache_file}, rebuilding...")
 
         if not json_file.exists():
             raise FileNotFoundError(f"{json_file} not found")
@@ -207,7 +210,8 @@ class AV2Dataset(Dataset):
             raise FileNotFoundError(f"{parquet_file} not found")
 
         static_map = ArgoverseStaticMap.from_json(json_file)
-        scenario = scenario_serialization.load_argoverse_scenario_parquet(parquet_file)
+        scenario = scenario_serialization.load_argoverse_scenario_parquet(
+            parquet_file)
 
         total_steps = self.history_steps + self.future_steps
 
@@ -225,7 +229,7 @@ class AV2Dataset(Dataset):
             target_history[:, :2], target_seq.mask, self.history_steps
         )
         target_future = target_seq.features[
-            self.history_steps : self.history_steps + self.future_steps, :2
+            self.history_steps: self.history_steps + self.future_steps, :2
         ]
 
         # gather other agents sorted by amount of history available
@@ -241,9 +245,13 @@ class AV2Dataset(Dataset):
         )
 
         agent_histories: List[torch.Tensor] = []
+        agent_history_masks: List[torch.Tensor] = []
+        agent_futures: List[torch.Tensor] = []
+        agent_future_masks: List[torch.Tensor] = []
         agent_last_positions: List[np.ndarray] = []
         target_agent_idx = 0
 
+        # * make sure target is at the first position
         ordered_agents: List[Tuple[str, AgentSequence]] = []
         for track_id, seq in agent_entries:
             if track_id == target_track.track_id:
@@ -254,7 +262,24 @@ class AV2Dataset(Dataset):
         for idx_entry, (track_id, seq) in enumerate(ordered_agents):
             if len(agent_histories) >= self.max_agents:
                 break
-            agent_histories.append(torch.from_numpy(seq.features[: self.history_steps]))
+            agent_histories.append(torch.from_numpy(
+                seq.features[: self.history_steps]))
+            agent_history_masks.append(
+                torch.from_numpy(
+                    seq.mask[:self.history_steps])
+            )
+
+            agent_futures.append(
+                torch.from_numpy(
+                    seq.features[self.history_steps:self.history_steps+self.future_steps, :2])
+            )
+            agent_future_masks.append(
+                torch.from_numpy(
+                    seq.mask[self.history_steps:self.history_steps +
+                             self.future_steps]
+                )
+            )
+
             agent_last_positions.append(
                 self._select_last_valid(
                     seq.features[:, :2], seq.mask, self.history_steps
@@ -267,6 +292,27 @@ class AV2Dataset(Dataset):
             torch.stack(agent_histories, dim=0)
             if agent_histories
             else torch.zeros((0, self.history_steps, 7))
+        )
+        agent_history_masks_tensor = (
+            torch.stack(agent_history_masks, dim=0)
+            if agent_history_masks
+            else torch.zeros((0, self.history_steps))
+        )
+        agent_future_tensor = (
+            torch.stack(agent_futures, dim=0)
+            if agent_futures
+            else torch.zeros((0, self.future_steps, 2))
+        )
+        agent_future_masks_tensor = (
+            torch.stack(agent_future_masks, dim=0)
+            if agent_future_masks
+            else torch.zeros((0, self.future_steps))
+        )
+        
+        agent_last_pos_tensor = (
+            torch.from_numpy(np.stack(agent_last_positions, axis=0)).float()
+            if len(agent_last_positions) > 0
+            else torch.zeros((0, 2), dtype=torch.float)
         )
 
         lane_points, lane_edge_index = self._build_lane_graph(
@@ -314,14 +360,30 @@ class AV2Dataset(Dataset):
 
         sample = {
             "lane_points": lane_points.float(),  # [num_lanes, lane_points, 2]
-            "agent_history": agent_history_tensor.float(),  # [num_agents, history_steps, 7], feat: x, y, vx, vy, sin_heading, cos_heading, observed
-            "edge_index_lane_to_lane": lane_edge_index.long(),  # [2, num_lane_edges]
-            "edge_index_agent_to_agent": agent_edge_index.long(),  # [2, num_agent_edges]
-            "edge_index_lane_to_agent": edge_index_lane_agent.long(),  # [2, num_lane_agent_edges]
-            "target_agent_idx": torch.tensor(target_agent_idx, dtype=torch.long),  # int
-            "target_last_pos": torch.from_numpy(target_last_pos).float(),  # [2]
-            "target_gt": torch.from_numpy(target_future).float(),  # [future_steps, 2]
+            # [num_agents, history_steps, 7], feat: x, y, vx, vy, sin_heading, cos_heading, observed
+            "agent_history": agent_history_tensor.float(),
+            # [num_agents, history_steps]
+            "agent_history_mask": agent_history_masks_tensor.bool(),
+            # [num_agents, future_steps, 2]
+            "agent_future": agent_future_tensor.float(),
+            # [num_agents, future_steps]
+            "agent_future_mask": agent_future_masks_tensor.bool(),
+            # [2, num_lane_edges]
+            "edge_index_lane_to_lane": lane_edge_index.long(),
+            # [2, num_agent_edges]
+            "edge_index_agent_to_agent": agent_edge_index.long(),
+            # [2, num_lane_agent_edges]
+            "edge_index_lane_to_agent": edge_index_lane_agent.long(),
+            # int
+            "target_agent_idx": torch.tensor(target_agent_idx, dtype=torch.long),
+            # [2]
+            "target_last_pos": torch.from_numpy(target_last_pos).float(),
+            "agent_last_pos": agent_last_pos_tensor,  # [num_agents, 2]
+            # [future_steps, 2]
+            "target_gt": torch.from_numpy(target_future).float(),
             "scenario_id": scenario.scenario_id,  # str
+            # [2] scene-centric
+            "centroid": torch.from_numpy(target_last_pos).float(),
         }
         if cache_file is not None:
             torch.save(sample, cache_file)

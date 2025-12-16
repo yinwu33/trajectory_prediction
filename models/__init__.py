@@ -1,3 +1,1 @@
-from .vectornet import VectorNetTrajPred, VectorNetBackbone
-
-__all__ = ["VectorNetTrajPred", "VectorNetBackbone"]
+from .vectornet import VectorNetLightningModule as VectorNet
