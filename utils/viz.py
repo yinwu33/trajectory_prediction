@@ -1,4 +1,5 @@
 from __future__ import annotations
+import matplotlib.pyplot as plt
 from typing import Optional
 
 import torch
@@ -6,7 +7,6 @@ import numpy as np
 
 import matplotlib
 matplotlib.use("Agg")  # safe headless backend for dataloader forks
-import matplotlib.pyplot as plt
 
 
 def _to_numpy(arr: torch.Tensor | np.ndarray | None) -> Optional[np.ndarray]:
@@ -24,12 +24,16 @@ def plot_scenario(
     target_last_pos: torch.Tensor | np.ndarray | None = None,
     target_gt: torch.Tensor | np.ndarray | None = None,
     prediction: torch.Tensor | np.ndarray | None = None,
+    probabilities: torch.Tensor | None = None,
     other_future: torch.Tensor | np.ndarray | None = None,
     other_future_mask: torch.Tensor | np.ndarray | None = None,
     other_prediction: torch.Tensor | np.ndarray | None = None,
     agent_last_pos: torch.Tensor | np.ndarray | None = None,
     scenario_id: str | None = None,
     view_radius: float = 80.0,
+    max_modes_to_plot: int = 6,
+    multi_agent: bool = False,
+    k: int = 1,
 ):
     """Plot lanes, agent history, target future ground truth, and prediction."""
 
@@ -38,6 +42,7 @@ def plot_scenario(
     target_last_pos_np = _to_numpy(target_last_pos)
     target_gt_np = _to_numpy(target_gt)
     pred_np = _to_numpy(prediction)
+    prob_np = _to_numpy(probabilities)
     other_future_np = _to_numpy(other_future)
     other_future_mask_np = _to_numpy(other_future_mask)
     other_pred_np = _to_numpy(other_prediction)
@@ -102,37 +107,59 @@ def plot_scenario(
             label="target future",
         )
         ax.scatter(gt_coords[-1, 0], gt_coords[-1, 1], color="#2ca02c", s=25)
-        
 
     # Model prediction
+    # pred_np.shape [t, 2]
+    # pred_np.shape [k, t, 2]
+    # pred_np.shape [n, k, t, 2]
+    # pred_np.shape [n, t, 2]
     if pred_np is not None:
-        target_pred = None
-        if pred_np.ndim == 4 and pred_np.shape[0] > target_agent_idx:
-            target_pred = pred_np[target_agent_idx][0]  # take first mode
-        elif pred_np.ndim == 3 and pred_np.shape[0] > target_agent_idx:
-            target_pred = (
-                pred_np[target_agent_idx]
-                if pred_np.shape[1] == 2
-                else pred_np[target_agent_idx][0]
-            )
+        target_preds = []  # each is [t, 2]
+        target_probs = []
+        if k == 1:
+            # single modal
+            if pred_np.ndim == 2:
+                # [t, 2]
+                target_preds.append(pred_np)
+                target_probs.append(1.)
+            else:
+                # pred_np.ndim == 3 [n, t, 2]
+                target_preds.append(pred_np[target_agent_idx])
+                target_probs.append(prob_np[target_agent_idx])
         else:
-            target_pred = pred_np
+            # multi modal
+            if pred_np.ndim == 4:
+                # [n, k, t, 2]
+                target_preds = [i for i in pred_np[target_agent_idx]]
+                target_probs = [i for i in prob_np[target_agent_idx]]
+            else:
+                # [k, t, 2]
+                target_preds = [i for i in pred_np]
+                target_probs = [i for i in prob_np]
 
-        if target_pred is not None and target_pred.ndim == 2:
+        # Plot up to max_modes_to_plot predictions
+        for target_pred, target_prob in zip(target_preds, target_probs):
             pred_coords = target_pred
+            pred_prob = float(target_prob)
+
             if target_last_pos_np is not None:
                 pred_coords = np.vstack(
                     [target_last_pos_np[None, :], pred_coords])
+
             ax.plot(
                 pred_coords[:, 0],
                 pred_coords[:, 1],
                 color="#d62728",
                 linestyle="--",
                 linewidth=2.0,
-                label="prediction",
+                alpha=pred_prob,
             )
             ax.scatter(pred_coords[-1, 0],
-                       pred_coords[-1, 1], color="#d62728", s=25)
+                       pred_coords[-1, 1],
+                       color="#d62728",
+                       s=25,
+                       zorder=3,
+                       )
 
     # Other agents future GT (lighter)
     if other_future_np is not None and other_future_np.ndim == 3:

@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import torch
+import torch.nn.functional as F
 import pytorch_lightning as pl
 
 import matplotlib
@@ -66,8 +67,8 @@ class TrajectoryVisualizationCallback(pl.Callback):
         batch: Dict[str, Any],
         stage: str,
     ) -> None:
-        preds = self._run_model(pl_module, batch)
-        scenario = self._extract_scenario(batch, preds, scenario_idx=0)
+        preds, probs = self._run_model(pl_module, batch)
+        scenario = self._extract_scenario(batch, preds, scenario_idx=0, probs=probs)
         if scenario is None:
             return
 
@@ -78,11 +79,13 @@ class TrajectoryVisualizationCallback(pl.Callback):
             target_last_pos=scenario["target_last_pos"],
             target_gt=scenario["target_gt"],
             prediction=scenario.get("prediction"),
+            probabilities=scenario["probabilities"],
             other_future=scenario.get("other_future"),
             other_future_mask=scenario.get("other_future_mask"),
             other_prediction=scenario.get("other_prediction"),
             agent_last_pos=scenario.get("agent_last_pos"),
             scenario_id=scenario.get("scenario_id"),
+            k=pl_module.model.k,
         )
         self._log_figure(trainer, fig, tag=f"{stage}/viz")
         plt.close(fig)
@@ -93,22 +96,21 @@ class TrajectoryVisualizationCallback(pl.Callback):
         was_training = pl_module.training
         pl_module.eval()
         with torch.no_grad():
-            pred, logits = pl_module(batch)
+            pred, logits = pl_module(batch) # pred is the full output, possibly multi-modal
         if was_training:
             pl_module.train()
 
-        if logits is None:
-            best_pred = pred
-        else:
-            best_pred = pl_module.model.select_best_modal(pred, logits)
-
-        return best_pred.detach().cpu() if isinstance(best_pred, torch.Tensor) else None
+        pred = pred.detach().cpu() 
+        probs = F.softmax(logits, dim=1) if logits is not None else None
+        
+        return pred, probs
 
     def _extract_scenario(
         self,
         batch: Dict[str, Any],
         preds: Optional[torch.Tensor],
         scenario_idx: int,
+        probs: Optional[torch.Tensor] = None
     ) -> Optional[Dict[str, Any]]:
         lane_counts: List[int] = batch.get("lane_counts", [])
         agent_counts: List[int] = batch.get("agent_counts", [])
@@ -137,13 +139,16 @@ class TrajectoryVisualizationCallback(pl.Callback):
         prediction = None
         other_prediction = None
         if preds is not None:
-            total_agents = sum(agent_counts)
-            if preds.shape[0] == len(agent_counts):
-                prediction = preds[scenario_idx]
-            elif preds.shape[0] == total_agents:
-                scenario_preds = preds[agent_start:agent_end]
-                prediction = scenario_preds
-                other_prediction = scenario_preds
+            # [b, t, 2] or [b, k, t, 2] or [b, n, k, t, 2]
+            prediction = preds[scenario_idx]  # [t, 2] or [k, t, 2]
+            probabilities = probs[scenario_idx]  # [k]
+            # total_agents = sum(agent_counts)
+            # if preds.shape[0] == len(agent_counts):
+            #     prediction = preds[scenario_idx]
+            # elif preds.shape[0] == total_agents:
+            #     scenario_preds = preds[agent_start:agent_end]
+            #     prediction = scenario_preds
+            #     other_prediction = scenario_preds
 
         return {
             "lane_points": batch["lane_points"][lane_start:lane_end].detach().cpu(),
@@ -154,6 +159,7 @@ class TrajectoryVisualizationCallback(pl.Callback):
             "target_last_pos": batch["target_last_pos"][scenario_idx].detach().cpu(),
             "target_gt": batch["target_gt"][scenario_idx].detach().cpu(),
             "prediction": prediction,
+            "probabilities": probabilities,
             "other_future": batch.get("agent_future", None)[
                 agent_start:agent_end
             ].detach().cpu()
