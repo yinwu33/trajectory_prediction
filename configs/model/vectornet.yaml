@@ -4,3 +4,4 @@ hidden_dim: 128
 global_layers: 1
 dropout: 0.1
 future_steps: ${datamodule.future_steps}
+k: 6

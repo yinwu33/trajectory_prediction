@@ -155,6 +155,73 @@ class TrajectoryDecoder(nn.Module):
         out = self.mlp(agent_feat)
         return out.view(agent_feat.shape[0], self.future_steps, self.coord_dim)
 
+    def loss(self, pred, logits, target):
+        loss = F.smooth_l1_loss(pred, target)
+        return dict(loss=loss)
+
+
+class MultiModalTrajectoryDecoder(nn.Module):
+    def __init__(
+        self,
+        hidden_dim: int,
+        future_steps: int,
+        dropout: float = 0.1,
+        coord_dim: int = 2,
+        k: int = 6,
+    ):
+        super().__init__()
+        self.future_steps = future_steps
+        self.coord_dim = coord_dim
+        self.k = k
+        self.traj_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, k*future_steps * coord_dim),
+        )
+
+        self.prob_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, k),
+        )
+
+    def forward(self, agent_feat: torch.Tensor) -> torch.Tensor:
+        # agent_feat: [B*N]
+        out_traj = self.traj_mlp(agent_feat)
+        out_traj = out_traj.view(
+            agent_feat.shape[0], self.k, self.future_steps, self.coord_dim)
+
+        logits = self.prob_mlp(agent_feat)
+
+        return out_traj, logits
+
+    def loss(self, pred, logits, target, lambda_prob=1.0):
+        # pred: [num_agents, k, T, 2]
+        # logits: [num_agents, k]
+        # target: [num_agents, T, 2]
+        target_exp = target[:, None, :, :].expand_as(pred)
+
+        per_point = F.smooth_l1_loss(
+            pred, target_exp, reduction="none")  # [n, k, t, 2]
+        per_k = per_point.mean(dim=(-1, -2))  # [n, k]
+
+        best_k_indices = per_k.argmin(dim=1)  # [n]
+
+        loss_reg = per_k.gather(1, best_k_indices[:, None]).mean()
+
+        loss_prob = F.cross_entropy(logits, best_k_indices)
+
+        loss = loss_reg + lambda_prob * loss_prob\
+
+
+        return dict(
+            loss_reg=loss_reg,
+            loss_prob=loss_prob,
+            loss=loss
+        )
+
 
 class VectorNetTrajPred(nn.Module):
     def __init__(
@@ -163,16 +230,16 @@ class VectorNetTrajPred(nn.Module):
         global_layers: int = 1,
         dropout: float = 0.1,
         future_steps: int = 30,
-        lr: float = 1e-4,
+        k: int = 1,
     ):
         super().__init__()
+        self.k = k
         self.backbone = VectorNetBackbone(
             hidden_dim=hidden_dim, global_layers=global_layers, dropout=dropout
         )
         self.decoder = TrajectoryDecoder(
             hidden_dim=hidden_dim, future_steps=future_steps, dropout=dropout
-        )
-        self.lr = lr
+        ) if k == 1 else MultiModalTrajectoryDecoder(hidden_dim=hidden_dim, future_steps=future_steps, dropout=dropout, k=k)
 
     def forward(self, batch: dict) -> torch.Tensor:
         lane_feat, agent_feat = self.backbone(
@@ -183,12 +250,32 @@ class VectorNetTrajPred(nn.Module):
             edge_lane_agent=batch["edge_index_lane_to_agent"],
         )
 
-        target_feat = agent_feat[batch["target_agent_global_idx"]]
-        pred = self.decoder(target_feat)
-        return pred + batch["target_last_pos"].unsqueeze(1)
+        target_feat = agent_feat[batch["target_agent_global_idx"]]  # [B, C]
+        if self.k == 1:
+            # single agent single modal
+            pred = self.decoder(target_feat)
+            pred = pred + batch["target_last_pos"].unsqueeze(1)
+            return pred, None
+        else:
+            # single agent multi modal
+            pred, logits = self.decoder(target_feat)
+            pred = pred + batch["target_last_pos"][:, None, None, :]
+            return pred, logits
 
-    def loss(self, pred, batch) -> dict:
-        return F.smooth_l1_loss(pred, batch["target_gt"])
+    def loss(self, pred, logits, batch) -> dict:
+        return self.decoder.loss(pred, logits, batch["target_gt"])
+    
+    def select_best_modal(self, pred, logits) -> torch.Tensor:
+        # preds: [n, k , t, 2]
+        # logits: [n, k]
+        
+        probs = F.softmax(logits, dim=1)  # [n, k]
+        best_k = probs.argmax(dim=1)  # [n]
+        n = pred.shape[0]
+        best_pred = pred[torch.arange(n, device=pred.device), best_k]
+        
+        return best_pred
+        
 
     # def training_step(self, batch: dict, batch_idx: int):
     #     pred = self(batch)

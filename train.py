@@ -49,6 +49,7 @@ def main(cfg: DictConfig) -> None:
             name=f"{cfg.project_name}/{cfg.exp_name}",
         )
 
+    logger.log_hyperparams(cfg)
     trainer = pl.Trainer(
         logger=logger,
         callbacks=build_callbacks(cfg),

@@ -93,12 +93,16 @@ class TrajectoryVisualizationCallback(pl.Callback):
         was_training = pl_module.training
         pl_module.eval()
         with torch.no_grad():
-            preds = pl_module(batch)
+            pred, logits = pl_module(batch)
         if was_training:
             pl_module.train()
-        if isinstance(preds, tuple):
-            preds = preds[0]
-        return preds.detach().cpu() if isinstance(preds, torch.Tensor) else None
+
+        if logits is None:
+            best_pred = pred
+        else:
+            best_pred = pl_module.model.select_best_modal(pred, logits)
+
+        return best_pred.detach().cpu() if isinstance(best_pred, torch.Tensor) else None
 
     def _extract_scenario(
         self,
