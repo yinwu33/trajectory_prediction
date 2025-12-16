@@ -195,13 +195,11 @@ class AV2Dataset(Dataset):
         cache_file = self.cache_dir / f"{log_id}.pt" if self.preprocess else None
 
         if cache_file is not None and cache_file.exists():
-            sample = torch.load(cache_file, map_location="cpu", weights_only=True)
-            return sample
-            # try:
-            #     sample = torch.load(cache_file, map_location="cpu")
-            #     return sample
-            # except Exception:
-            #     print(f"Warning: failed to load cache file {cache_file}, rebuilding...")
+            try:
+                sample = torch.load(cache_file, map_location="cpu", weights_only=True)
+                return sample
+            except Exception:
+                print(f"Warning: failed to load cache file {cache_file}, rebuilding...")
 
         if not json_file.exists():
             raise FileNotFoundError(f"{json_file} not found")

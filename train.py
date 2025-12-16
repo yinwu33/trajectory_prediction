@@ -3,7 +3,7 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
 
 def build_callbacks(cfg: DictConfig) -> list[pl.Callback]:
@@ -31,9 +31,18 @@ def main(cfg: DictConfig) -> None:
     dm = instantiate(cfg.datamodule)
     model = instantiate(cfg.model, lr=cfg.optimizer.lr)
 
-    logger = TensorBoardLogger(
-        save_dir=cfg.trainer.get("default_root_dir", "./outputs"), name="vectornet"
-    )
+    if cfg.logger == "wandb":
+        logger = WandbLogger(
+            project=cfg.project_name,
+            name=cfg.exp_name,
+            save_dir=cfg.output_root_dir,
+            log_model=False,
+        )
+    else:
+        logger = TensorBoardLogger(
+            save_dir=cfg.output_root_dir, 
+            name=f"{cfg.project_name}/{cfg.exp_name}",
+        )
 
     trainer = pl.Trainer(
         logger=logger,
