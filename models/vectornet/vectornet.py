@@ -6,16 +6,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import MessagePassing
 
+from utils.init_weights import init_weights
+
 
 class SubgraphEncoder(nn.Module):
     """Encodes individual polylines with a PointNet-style encoder."""
 
     def __init__(
-        self, hidden_dim: int = 128, output_dim: int = 128, dropout: float = 0.1
+        self, input_dim: int, hidden_dim: int = 128, output_dim: int = 128, dropout: float = 0.1
     ):
         super().__init__()
         self.point_mlp = nn.Sequential(
-            nn.LazyLinear(hidden_dim),
+            nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -43,7 +45,7 @@ class EdgeGNNLayer(MessagePassing):
     def __init__(self, hidden_dim: int, dropout: float = 0.1, aggr: str = "mean"):
         super().__init__(aggr=aggr)
         self.update_mlp = nn.Sequential(
-            nn.LazyLinear(hidden_dim),
+            nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -76,8 +78,9 @@ class VectorNetBackbone(nn.Module):
         dropout: float = 0.1,
     ):
         super().__init__()
-        self.lane_encoder = SubgraphEncoder(hidden_dim, hidden_dim, dropout)
-        self.agent_encoder = SubgraphEncoder(hidden_dim, hidden_dim, dropout)
+        self.lane_encoder = SubgraphEncoder(2, hidden_dim, hidden_dim, dropout)
+        self.agent_encoder = SubgraphEncoder(
+            7, hidden_dim, hidden_dim, dropout)
         self.global_layers = nn.ModuleList(
             [
                 nn.ModuleDict(
@@ -90,6 +93,8 @@ class VectorNetBackbone(nn.Module):
                 for _ in range(global_layers)
             ]
         )
+
+        self.apply(init_weights)
 
     def forward(
         self,
