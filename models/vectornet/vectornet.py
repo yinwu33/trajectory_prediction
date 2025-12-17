@@ -18,13 +18,16 @@ class SubgraphEncoder(nn.Module):
         super().__init__()
         self.point_mlp = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
         self.polyline_mlp = nn.Sequential(
             nn.Linear(hidden_dim, output_dim),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
@@ -46,8 +49,10 @@ class EdgeGNNLayer(MessagePassing):
         super().__init__(aggr=aggr)
         self.update_mlp = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
@@ -142,6 +147,7 @@ class TrajectoryDecoder(nn.Module):
         self.coord_dim = coord_dim
         self.mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, future_steps * coord_dim),
