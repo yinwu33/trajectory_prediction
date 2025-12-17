@@ -1,0 +1,13 @@
+# @package _global_
+defaults:
+  - _self_
+
+model:
+  hidden_dim: 512
+  global_layers: 3
+
+datamodule:
+  batch_size: 256
+  num_workers: 64
+
+exp_name: vectornet_large

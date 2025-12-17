@@ -264,43 +264,14 @@ class VectorNetTrajPred(nn.Module):
 
     def loss(self, pred, logits, batch) -> dict:
         return self.decoder.loss(pred, logits, batch["target_gt"])
-    
+
     def select_best_modal(self, pred, logits) -> torch.Tensor:
         # preds: [n, k , t, 2]
         # logits: [n, k]
-        
+
         probs = F.softmax(logits, dim=1)  # [n, k]
         best_k = probs.argmax(dim=1)  # [n]
         n = pred.shape[0]
         best_pred = pred[torch.arange(n, device=pred.device), best_k]
-        
+
         return best_pred
-        
-
-    # def training_step(self, batch: dict, batch_idx: int):
-    #     pred = self(batch)
-    #     loss = F.smooth_l1_loss(pred, batch["target_gt"])
-    #     self.log(
-    #         "train/loss",
-    #         loss,
-    #         prog_bar=True,
-    #         on_step=True,
-    #         on_epoch=True,
-    #         batch_size=batch["target_gt"].shape[0],
-    #     )
-    #     return loss
-
-    # def validation_step(self, batch: dict, batch_idx: int):
-    #     pred = self(batch)
-    #     loss = F.smooth_l1_loss(pred, batch["target_gt"])
-    #     self.log(
-    #         "val/loss", loss, prog_bar=True, batch_size=batch["target_gt"].shape[0]
-    #     )
-
-    # def test_step(self, batch: dict, batch_idx: int):
-    #     pred = self(batch)
-    #     loss = F.smooth_l1_loss(pred, batch["target_gt"])
-    #     self.log("test/loss", loss, batch_size=batch["target_gt"].shape[0])
-
-    # def configure_optimizers(self):
-    #     return torch.optim.Adam(self.parameters(), lr=self.lr)

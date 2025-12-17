@@ -36,7 +36,7 @@ def main(cfg: DictConfig) -> None:
     dm = instantiate(cfg.datamodule)
     model = instantiate(cfg.model, lr=cfg.optimizer.lr)
 
-    if cfg.logger == "wandb":
+    if cfg.logger.type == "wandb":
         logger = WandbLogger(
             project=cfg.project_name,
             name=cfg.exp_name,

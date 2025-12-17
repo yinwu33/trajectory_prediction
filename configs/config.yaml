@@ -1,22 +1,13 @@
 defaults:
+  - _self_
   - datamodule: argoverse2
   - model: vectornet
-  - _self_
-seed: 42
+  - trainer: default
+  - logger: wandb
+  - optimizer: adamw
+  - experiment: null
 
-trainer:
-  max_epochs: 200
-  accelerator: auto
-  devices: auto
-  default_root_dir: ./outputs
-
-  log_every_n_steps: 50
-
-optimizer:
-  lr: 1e-4
-
-
-logger: wandb  # default is tensorboard
 project_name: vectornet
 exp_name: test
+seed: 42
 output_root_dir: ./outputs
