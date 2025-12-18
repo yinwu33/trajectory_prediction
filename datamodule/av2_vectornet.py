@@ -12,11 +12,12 @@ from torch.utils.data import DataLoader
 from .datasets.av2 import AV2VectorNetDataset
 
 
-class AV2Datamodule(pl.LightningDataModule):
+class AV2VectorNetDatamodule(pl.LightningDataModule):
     """PyTorch Lightning DataModule for Argoverse 2 motion forecasting."""
 
     def __init__(
         self,
+        data_root: str,
         dataset: OmegaConf,
         train_split: str = "train",
         val_split: str = "val",
@@ -27,6 +28,7 @@ class AV2Datamodule(pl.LightningDataModule):
     ):
         super().__init__()
 
+        self.data_root = data_root
         self.train_split = train_split
         self.val_split = val_split
         self.test_split = test_split
@@ -43,7 +45,8 @@ class AV2Datamodule(pl.LightningDataModule):
 
     def setup(self, stage: str | None = None):
         common_kwargs = OmegaConf.to_container(self.dataset_cfg, resolve=True)
-
+        common_kwargs.update({"data_root": self.data_root})
+        
         if stage in ("fit", None):
             self.train_dataset = AV2VectorNetDataset(
                 split=self.train_split, **common_kwargs

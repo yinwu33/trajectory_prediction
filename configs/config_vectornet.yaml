@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - datamodule: argoverse2
+  - datamodule: av2_vectornet
   - model: vectornet
   - trainer: default
   - logger: wandb

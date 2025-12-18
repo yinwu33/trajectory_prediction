@@ -53,10 +53,7 @@ class AV2VectorNetDataset(Dataset):
 
         # folder under data_root / split
         self.log_dirs = sorted((self.data_root / split).glob("*"))
-        self.cache_dir = (
-            self.data_root if preprocess_dir is None else Path(preprocess_dir)
-        )
-        self.cache_dir = self.cache_dir / "cache" / split
+        self.cache_dir = Path(preprocess_dir) / "av2_vectornet" / split
         if self.preprocess:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 

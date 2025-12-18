@@ -1,0 +1,9 @@
+data_root: ./data/
+
+train_split: train
+val_split: val
+test_split: test
+
+batch_size: 512
+num_workers: 32
+pin_memory: false

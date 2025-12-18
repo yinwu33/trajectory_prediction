@@ -29,7 +29,7 @@ def build_callbacks(cfg: DictConfig) -> list[pl.Callback]:
     return callbacks
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="config")
+@hydra.main(version_base=None, config_path="configs", config_name="config_vectornet")
 def main(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
 
