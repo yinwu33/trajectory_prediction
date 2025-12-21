@@ -4,6 +4,7 @@ from omegaconf import DictConfig
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
+from pytorch_lightning.profilers import AdvancedProfiler
 
 from callbacks.viz import TrajectoryVisualizationCallback
 
@@ -35,6 +36,10 @@ def main(cfg: DictConfig) -> None:
 
     dm = instantiate(cfg.datamodule)
     model = instantiate(cfg.model, lr=cfg.optimizer.lr)
+
+    profiler = None
+    if cfg.trainer.profiler is not None:
+        cfg.trainer.max_epochs = 3
 
     if cfg.logger.type == "wandb":
         logger = WandbLogger(

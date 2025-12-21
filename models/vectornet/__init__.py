@@ -14,15 +14,13 @@ class VectorNetLightningModule(pl.LightningModule):
         self.model = VectorNetTrajPred(*args, **kwargs)
 
     def forward(self, batch: dict) -> torch.Tensor:
-
         return self.model(batch)
 
     def training_step(self, batch, batch_idx):
         pred, logits = self.model(batch)
         losses = self.model.loss(pred, logits, batch)
 
-        self._log_losses(
-            losses, "train", batch_size=batch["target_gt"].shape[0])
+        self._log_losses(losses, "train", batch_size=batch["target_gt"].shape[0])
         return losses["loss"]
 
     def validation_step(self, batch: dict, batch_idx: int):
@@ -35,25 +33,44 @@ class VectorNetLightningModule(pl.LightningModule):
             # single modal metrics ade, fde
             ade = ADE(pred, batch["target_gt"]).mean()
             fde = FDE(pred, batch["target_gt"]).mean()
-            self.log("val/ADE", ade, prog_bar=True, on_epoch=True,
-                     batch_size=batch["target_gt"].shape[0])
-            self.log("val/FDE", fde, prog_bar=True, on_epoch=True,
-                     batch_size=batch["target_gt"].shape[0])
+            self.log(
+                "val/ADE",
+                ade,
+                prog_bar=True,
+                on_epoch=True,
+                batch_size=batch["target_gt"].shape[0],
+            )
+            self.log(
+                "val/FDE",
+                fde,
+                prog_bar=True,
+                on_epoch=True,
+                batch_size=batch["target_gt"].shape[0],
+            )
         else:
             # multi modal metrics minade, minfde
             min_ade = minADE(pred, batch["target_gt"]).mean()
             min_fde = minFDE(pred, batch["target_gt"]).mean()
-            self.log("val/minADE", min_ade, prog_bar=True,
-                     on_epoch=True, batch_size=batch["target_gt"].shape[0])
-            self.log("val/minFDE", min_fde, prog_bar=True,
-                     on_epoch=True, batch_size=batch["target_gt"].shape[0])
+            self.log(
+                "val/minADE",
+                min_ade,
+                prog_bar=True,
+                on_epoch=True,
+                batch_size=batch["target_gt"].shape[0],
+            )
+            self.log(
+                "val/minFDE",
+                min_fde,
+                prog_bar=True,
+                on_epoch=True,
+                batch_size=batch["target_gt"].shape[0],
+            )
 
     def test_step(self, batch: dict, batch_idx: int):
         pred, logits = self.model(batch)
         losses = self.model.loss(pred, logits, batch)
 
-        self._log_losses(
-            losses, "test", batch_size=batch["target_gt"].shape[0])
+        self._log_losses(losses, "test", batch_size=batch["target_gt"].shape[0])
 
     def _log_losses(self, loss_dict, prefix: str, batch_size: int):
         for k, v in loss_dict.items():
@@ -68,3 +85,6 @@ class VectorNetLightningModule(pl.LightningModule):
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.model.parameters(), lr=self.lr)
+
+    def run_forward_postprocess(self, batch: dict) -> torch.Tensor:
+        return self.model(batch)

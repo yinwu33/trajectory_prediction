@@ -1,0 +1,13 @@
+defaults:
+  - _self_
+  - datamodule: av2_simpl
+  - model: simpl
+  - trainer: default
+  - logger: wandb
+  - optimizer: adamw
+  - experiment: null
+
+project_name: simpl
+exp_name: test
+seed: 42
+output_root_dir: ./outputs

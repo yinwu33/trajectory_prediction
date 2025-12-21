@@ -9,10 +9,10 @@ from hydra.utils import to_absolute_path
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
-from .datasets.av2 import AV2VectorNetDataset
+from .datasets.av2 import AV2SimplDataset
 
 
-class AV2VectorNetDatamodule(pl.LightningDataModule):
+class AV2SimplDatamodule(pl.LightningDataModule):
     """PyTorch Lightning DataModule for Argoverse 2 motion forecasting."""
 
     def __init__(
@@ -50,17 +50,13 @@ class AV2VectorNetDatamodule(pl.LightningDataModule):
         common_kwargs.update({"data_root": self.data_root})
 
         if stage in ("fit", None):
-            self.train_dataset = AV2VectorNetDataset(
+            self.train_dataset = AV2SimplDataset(
                 split=self.train_split, **common_kwargs
             )
-            self.val_dataset = AV2VectorNetDataset(
-                split=self.val_split, **common_kwargs
-            )
+            self.val_dataset = AV2SimplDataset(split=self.val_split, **common_kwargs)
 
         if stage in ("test", None):
-            self.test_dataset = AV2VectorNetDataset(
-                split=self.test_split, **common_kwargs
-            )
+            self.test_dataset = AV2SimplDataset(split=self.test_split, **common_kwargs)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

@@ -1,0 +1,41 @@
+_target_: models.Simpl
+
+
+actor_net_cfg:
+  input_dim: 14
+  hidden_dim: 128  # same for all
+  num_fpn_scale: 4
+
+lane_net_cfg:
+  input_dim: 16
+  hidden_dim: 128
+  dropout: 0.1
+
+fusion_net_cfg:
+  actor_emb_dim: 128  # same as hidden_dim above
+  lane_emb_dim:  128  # same as hidden_dim above
+  rpe_input_dim: 5
+  rpe_emb_dim: 128
+  hidden_dim: 128  # same as hidden_dim above
+  dropout: 0.1 
+  num_scene_heads: 8
+  num_scene_layers: 4
+  update_edge: true
+
+mlp_decoder_cfg:
+  hidden_dim: 128
+  global_pred_lane: 60
+  k: 6
+  param_out: bezier  # bezier/monomial/none
+  param_order: 7
+
+loss_cfg:
+  global_pred_lane: 60
+  k: 6
+  reg_coef: 0.9
+  cls_coef: 0.1
+  mgn: 0.2
+  cls_thres: 2.0
+  cls_ignore: 0.2
+  yaw_loss: true  # ! ? where is this in original repo?
+  

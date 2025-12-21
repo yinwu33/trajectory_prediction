@@ -96,7 +96,7 @@ class TrajectoryVisualizationCallback(pl.Callback):
         was_training = pl_module.training
         pl_module.eval()
         with torch.no_grad():
-            pred, logits = pl_module(batch) # pred is the full output, possibly multi-modal
+            pred, logits = pl_module.run_forward_postprocess(batch) # pred is the full output, possibly multi-modal
         if was_training:
             pl_module.train()
 

@@ -4,3 +4,5 @@ devices: auto
 default_root_dir: ./outputs
 
 log_every_n_steps: 50
+
+profiler: null

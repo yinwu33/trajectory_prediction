@@ -1,0 +1,16 @@
+_target_: datamodule.AV2SimplDatamodule
+
+defaults:
+  - av2_base
+
+batch_size: 8
+num_workers: 32
+pin_memory: false
+
+dataset:
+  preprocess_dir: cache
+  history_steps: 50
+  future_steps: 60
+  min_distance_threshold: 20.0
+  augmentation: false
+  force_preprocess: false
