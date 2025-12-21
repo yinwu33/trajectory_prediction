@@ -287,15 +287,15 @@ class AV2SimplDataset(Dataset):
         # 1. Extract Trajectories
         # trajs_* shapes: [N, 110, ...]
         (
-            trajs_pos,
-            trajs_ang,
-            trajs_vel,
-            trajs_type,
-            has_flags,
-            trajs_tid,
-            trajs_cat,
-            orig_seq,
-            rot_seq,
+            trajs_pos,  # [N, 110, 2]
+            trajs_ang,  # [N, 110]
+            trajs_vel,  # [N, 110, 2]
+            trajs_type,  # [N, 110, 7]
+            valid_mask,  # [N, 110]
+            trajs_tid,  # List of track IDs
+            trajs_cat,  # List of categories
+            orig_seq,  # [2, ]
+            rot_seq,  # [2, 2]
         ) = self._extract_trajectories(scenario, static_map)
 
         if len(trajs_pos) == 0:
@@ -316,7 +316,7 @@ class AV2SimplDataset(Dataset):
                 "trajs_ang": trajs_ang,
                 "trajs_vel": trajs_vel,
                 "trajs_type": trajs_type,
-                "has_flags": has_flags,
+                "has_flags": valid_mask,
                 "trajs_tid": trajs_tid,
                 "trajs_cat": trajs_cat,
                 # These are computed in extract_trajectories relative to scene origin
@@ -339,7 +339,7 @@ class AV2SimplDataset(Dataset):
         Extracts, filters, normalizes, and pads trajectories.
         """
         # Identify Track Indices
-        focal_idx, av_idx = None, None
+        focal_idx, ego_idx = None, None
         scored_idcs, unscored_idcs, fragment_idcs = [], [], []
 
         for idx, track in enumerate(scenario.tracks):
@@ -349,7 +349,7 @@ class AV2SimplDataset(Dataset):
             ):
                 focal_idx = idx
             elif track.track_id == "AV":
-                av_idx = idx
+                ego_idx = idx
             elif track.category == TrackCategory.SCORED_TRACK:
                 scored_idcs.append(idx)
             elif track.category == TrackCategory.UNSCORED_TRACK:
@@ -358,18 +358,20 @@ class AV2SimplDataset(Dataset):
                 fragment_idcs.append(idx)
 
         # Enforce existence of AV and Focal
-        if av_idx is None or focal_idx is None:
+        if ego_idx is None or focal_idx is None:
             raise ValueError("Missing AV or Focal track.")
 
         # Sorting order: Focal -> AV -> Scored -> Unscored -> Fragments
-        sorted_idcs = [focal_idx, av_idx] + scored_idcs + unscored_idcs + fragment_idcs
-        sorted_cat = (
+        sorted_indices = (
+            [focal_idx, ego_idx] + scored_idcs + unscored_idcs + fragment_idcs
+        )
+        sorted_categories = (
             ["focal", "av"]
             + ["score"] * len(scored_idcs)
             + ["unscore"] * len(unscored_idcs)
             + ["frag"] * len(fragment_idcs)
         )
-        sorted_tid = [scenario.tracks[idx].track_id for idx in sorted_idcs]
+        sorted_track_indices = [scenario.tracks[idx].track_id for idx in sorted_indices]
 
         # Timestamps
         if self.split == "test":
@@ -378,46 +380,46 @@ class AV2SimplDataset(Dataset):
         else:
             ts_frame_indices = np.arange(0, self.seq_len)
 
-        obs_end_frame = self.history_steps - 1
+        last_history_index = self.history_steps - 1  # 49
 
         # Pre-fetch map points for distance filtering
         map_pts = []
         for lane_id, lane in static_map.vector_lane_segments.items():
             map_pts.append(static_map.get_lane_segment_centerline(lane_id)[:, 0:2])
-        map_pts = np.concatenate(map_pts, axis=0)
+        map_pts = np.concatenate(map_pts, axis=0)  # [N_map, 2]
         map_pts = np.expand_dims(map_pts, axis=0)  # [1, N_map, 2]
 
         # Containers
-        trajs_pos_list, trajs_ang_list, trajs_vel_list = [], [], []
-        trajs_type_list, has_flags_list = [], []
-        final_tids, final_cats = [], []
+        traj_pos_list, traj_ang_list, traj_vel_list = [], [], []
+        traj_type_list, valid_mask_list = [], []
+        final_track_id_list, final_category_list = [], []
 
         # Reference Frame Initialization (Based on Focal Agent at last obs frame)
         # Will be set in the first iteration (k=0 is focal)
         orig_seq, rot_seq, theta_seq = None, None, None
 
-        for k, track_idx in enumerate(sorted_idcs):
+        for k, track_idx in enumerate(sorted_indices):
             track = scenario.tracks[track_idx]
 
             # Extract raw states
             timestamps_iter = np.array(
                 [x.timestep for x in track.object_states], dtype=np.int16
             )
-            pos_iter = np.array([list(x.position) for x in track.object_states])
-            ang_iter = np.array([x.heading for x in track.object_states])
-            vel_iter = np.array([list(x.velocity) for x in track.object_states])
+            pos_iter = np.array([x.position for x in track.object_states])  # [N, 2]
+            ang_iter = np.array([x.heading for x in track.object_states])  # [N, ]
+            vel_iter = np.array([x.velocity for x in track.object_states])  # [N, 2]
 
             # Filter: Skip if strictly future or not present at observation time
             if (
-                timestamps_iter[0] > obs_end_frame
-                or obs_end_frame not in timestamps_iter
+                timestamps_iter[0] > last_history_index
+                or last_history_index not in timestamps_iter
             ):
                 continue
 
             # Define Coordinate System based on Focal Agent (k=0)
             if k == 0:
-                curr_orig = pos_iter[timestamps_iter == obs_end_frame][0]
-                curr_theta = ang_iter[timestamps_iter == obs_end_frame][0]
+                curr_orig = pos_iter[timestamps_iter == last_history_index][0]
+                curr_theta = ang_iter[timestamps_iter == last_history_index][0]
                 curr_rot = np.array(
                     [
                         [np.cos(curr_theta), -np.sin(curr_theta)],
@@ -428,13 +430,13 @@ class AV2SimplDataset(Dataset):
 
             # Distance Filter (Skip irrelevant background actors)
             # Only check for non-scored/non-focal/non-av tracks
-            if sorted_cat[k] in ["unscore", "frag"]:
+            if sorted_categories[k] in ["unscore", "frag"]:
                 # Check distance of observed points to map
-                obs_mask = timestamps_iter <= obs_end_frame
-                traj_obs_pts = np.expand_dims(
-                    pos_iter[obs_mask], axis=1
+                history_mask = timestamps_iter <= last_history_index
+                traj_history_points = np.expand_dims(
+                    pos_iter[history_mask], axis=1
                 )  # [T_obs, 1, 2]
-                dist = np.linalg.norm(traj_obs_pts - map_pts, axis=-1)
+                dist = np.linalg.norm(traj_history_points - map_pts, axis=-1)
                 if np.min(dist) > self.min_dist_threshold:
                     continue
 
@@ -486,23 +488,23 @@ class AV2SimplDataset(Dataset):
             vel_pad[mapped_indices] = vel_norm[valid_indices]
 
             # Append
-            trajs_pos_list.append(pos_pad)
-            trajs_ang_list.append(ang_pad)
-            trajs_vel_list.append(vel_pad)
-            trajs_type_list.append(traj_type)
-            has_flags_list.append(has_flag)
-            final_tids.append(sorted_tid[k])
-            final_cats.append(sorted_cat[k])
+            traj_pos_list.append(pos_pad)
+            traj_ang_list.append(ang_pad)
+            traj_vel_list.append(vel_pad)
+            traj_type_list.append(traj_type)
+            valid_mask_list.append(has_flag)
+            final_track_id_list.append(sorted_track_indices[k])
+            final_category_list.append(sorted_categories[k])
 
         # Stack into arrays
         return (
-            np.array(trajs_pos_list, dtype=np.float32),
-            np.array(trajs_ang_list, dtype=np.float32),
-            np.array(trajs_vel_list, dtype=np.float32),
-            np.array(trajs_type_list, dtype=np.int16),
-            np.array(has_flags_list, dtype=np.int16),
-            final_tids,
-            final_cats,
+            np.array(traj_pos_list, dtype=np.float32),
+            np.array(traj_ang_list, dtype=np.float32),
+            np.array(traj_vel_list, dtype=np.float32),
+            np.array(traj_type_list, dtype=np.int16),
+            np.array(valid_mask_list, dtype=np.int16),
+            final_track_id_list,
+            final_category_list,
             orig_seq,
             rot_seq,
         )

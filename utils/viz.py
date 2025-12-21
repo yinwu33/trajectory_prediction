@@ -31,8 +31,6 @@ def plot_scenario(
     agent_last_pos: torch.Tensor | np.ndarray | None = None,
     scenario_id: str | None = None,
     view_radius: float = 80.0,
-    max_modes_to_plot: int = 6,
-    multi_agent: bool = False,
     k: int = 1,
 ):
     """Plot lanes, agent history, target future ground truth, and prediction."""
@@ -237,6 +235,66 @@ def plot_scenario(
     if scenario_id is not None:
         title += f" ({scenario_id})"
     ax.set_title(title)
+    ax.legend(loc="upper right")
+    ax.grid(True, linestyle=":", linewidth=0.5, alpha=0.5)
+    fig.tight_layout()
+    return fig
+
+
+def _plot_map(
+    lane_points: torch.Tensor | np.ndarray,
+    view_center: torch.Tensor | np.ndarray | None = None,
+    view_radius: float = 80.0,
+):
+    lane_points_np = _to_numpy(lane_points)
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    # Map polylines
+    for lane in lane_points_np:
+        ax.plot(lane[:, 0], lane[:, 1], color="#c7c7c7",
+                linewidth=1.0, zorder=0)
+
+    if view_center is not None:
+        view_center_np = _to_numpy(view_center)
+        cx, cy = view_center_np
+        ax.set_xlim(cx - view_radius, cx + view_radius)
+        ax.set_ylim(cy - view_radius, cy + view_radius)
+
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_title("Map visualization")
+    ax.grid(True, linestyle=":", linewidth=0.5, alpha=0.5)
+    fig.tight_layout()
+    return fig
+
+def _plot_agent(
+    agent_history: torch.Tensor | np.ndarray,
+):
+    agent_history_np = _to_numpy(agent_history)
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    # Agent histories
+    obs_mask = agent_history_np[:, 6] > 0.5
+    coords = agent_history_np[obs_mask, :2]
+    if obs_mask.any():
+        ax.plot(
+            coords[:, 0],
+            coords[:, 1],
+            color="#1f77b4",
+            linewidth=2.0,
+            label="agent history",
+        )
+        ax.scatter(
+            coords[-1, 0],
+            coords[-1, 1],
+            color="#1f77b4",
+            s=20,
+            zorder=5,
+        )
+
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_title("Agent history visualization")
     ax.legend(loc="upper right")
     ax.grid(True, linestyle=":", linewidth=0.5, alpha=0.5)
     fig.tight_layout()

@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 
 import matplotlib
+
 matplotlib.use("Agg")  # safe headless backend for dataloader forks
 import matplotlib.pyplot as plt
 
@@ -41,7 +42,7 @@ class TrajectoryVisualizationCallback(pl.Callback):
             return
         if trainer.current_epoch % self.every_n_epochs != 0:
             return
-        self._log_first_scenario(trainer, pl_module, batch, stage="train")
+        self._log_first_scenario(trainer, pl_module, outputs, batch, stage="train")
         self._train_logged = True
 
     def on_validation_batch_end(
@@ -57,127 +58,21 @@ class TrajectoryVisualizationCallback(pl.Callback):
             return
         if trainer.current_epoch % self.every_n_epochs != 0:
             return
-        self._log_first_scenario(trainer, pl_module, batch, stage="val")
+        self._log_first_scenario(trainer, pl_module, outputs, batch, stage="val")
         self._val_logged = True
 
     def _log_first_scenario(
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
+        outputs: Any,
         batch: Dict[str, Any],
         stage: str,
     ) -> None:
-        preds, probs = self._run_model(pl_module, batch)
-        scenario = self._extract_scenario(batch, preds, scenario_idx=0, probs=probs)
-        if scenario is None:
-            return
-
-        fig = plot_scenario(
-            lane_points=scenario["lane_points"],
-            agent_history=scenario["agent_history"],
-            target_agent_idx=scenario["target_agent_idx"],
-            target_last_pos=scenario["target_last_pos"],
-            target_gt=scenario["target_gt"],
-            prediction=scenario.get("prediction"),
-            probabilities=scenario["probabilities"],
-            other_future=scenario.get("other_future"),
-            other_future_mask=scenario.get("other_future_mask"),
-            other_prediction=scenario.get("other_prediction"),
-            agent_last_pos=scenario.get("agent_last_pos"),
-            scenario_id=scenario.get("scenario_id"),
-            k=pl_module.model.k,
-        )
+        scenario = pl_module.create_scenario(batch, outputs, index=0)
+        fig = plot_scenario(**scenario, k=pl_module.model.k)
         self._log_figure(trainer, fig, tag=f"{stage}/viz")
         plt.close(fig)
-
-    def _run_model(
-        self, pl_module: pl.LightningModule, batch: Dict[str, Any]
-    ) -> Optional[torch.Tensor]:
-        was_training = pl_module.training
-        pl_module.eval()
-        with torch.no_grad():
-            pred, logits = pl_module.run_forward_postprocess(batch) # pred is the full output, possibly multi-modal
-        if was_training:
-            pl_module.train()
-
-        pred = pred.detach().cpu() 
-        probs = F.softmax(logits, dim=1) if logits is not None else None
-        
-        return pred, probs
-
-    def _extract_scenario(
-        self,
-        batch: Dict[str, Any],
-        preds: Optional[torch.Tensor],
-        scenario_idx: int,
-        probs: Optional[torch.Tensor] = None
-    ) -> Optional[Dict[str, Any]]:
-        lane_counts: List[int] = batch.get("lane_counts", [])
-        agent_counts: List[int] = batch.get("agent_counts", [])
-        if (
-            len(lane_counts) == 0
-            or len(agent_counts) == 0
-            or scenario_idx >= len(lane_counts)
-        ):
-            return None
-
-        lane_start = sum(lane_counts[:scenario_idx])
-        lane_end = lane_start + lane_counts[scenario_idx]
-        agent_start = sum(agent_counts[:scenario_idx])
-        agent_end = agent_start + agent_counts[scenario_idx]
-
-        scenario_id = (
-            batch.get("scenario_ids", [None] * len(lane_counts))[scenario_idx]
-            if "scenario_ids" in batch
-            else None
-        )
-
-        target_agent_global = batch["target_agent_global_idx"][scenario_idx].item(
-        )
-        target_agent_idx = int(target_agent_global - agent_start)
-
-        prediction = None
-        other_prediction = None
-        if preds is not None:
-            # [b, t, 2] or [b, k, t, 2] or [b, n, k, t, 2]
-            prediction = preds[scenario_idx]  # [t, 2] or [k, t, 2]
-            probabilities = probs[scenario_idx]  # [k]
-            # total_agents = sum(agent_counts)
-            # if preds.shape[0] == len(agent_counts):
-            #     prediction = preds[scenario_idx]
-            # elif preds.shape[0] == total_agents:
-            #     scenario_preds = preds[agent_start:agent_end]
-            #     prediction = scenario_preds
-            #     other_prediction = scenario_preds
-
-        return {
-            "lane_points": batch["lane_points"][lane_start:lane_end].detach().cpu(),
-            "agent_history": batch["agent_history"][agent_start:agent_end]
-            .detach()
-            .cpu(),
-            "target_agent_idx": target_agent_idx,
-            "target_last_pos": batch["target_last_pos"][scenario_idx].detach().cpu(),
-            "target_gt": batch["target_gt"][scenario_idx].detach().cpu(),
-            "prediction": prediction,
-            "probabilities": probabilities,
-            "other_future": batch.get("agent_future", None)[
-                agent_start:agent_end
-            ].detach().cpu()
-            if "agent_future" in batch
-            else None,
-            "other_future_mask": batch.get("agent_future_mask", None)[
-                agent_start:agent_end
-            ].detach().cpu()
-            if "agent_future_mask" in batch
-            else None,
-            "agent_last_pos": batch.get("agent_last_pos", None)[
-                agent_start:agent_end
-            ].detach().cpu()
-            if "agent_last_pos" in batch
-            else None,
-            "other_prediction": other_prediction,
-            "scenario_id": scenario_id,
-        }
 
     def _log_figure(self, trainer: pl.Trainer, fig, tag: str) -> None:
         logger = trainer.logger
