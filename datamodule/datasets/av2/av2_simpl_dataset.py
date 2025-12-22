@@ -128,60 +128,63 @@ class AV2SimplDataset(Dataset):
 
         data_item = None
 
-        # 1. Try Loading from Cache
-        # Skip if forcing preprocess
-        if cached_path.exists() and not self.force_preprocess:
-            try:
-                # Weights_only=False required for some dict/list structures,
-                # but explicit safe loading is preferred if possible.
-                data_item = torch.load(
-                    cached_path, map_location="cpu", weights_only=False
-                )
-            except Exception as e:
-                print(
-                    f"Error loading cached file {cached_path}: {e}. Retrying raw process."
-                )
-                # If cache is corrupted, try to delete it
-                try:
-                    os.remove(cached_path)
-                except OSError:
-                    pass
+        if not self.force_preprocess:
+            data_item = self._load_cache(cached_path)
 
-        # 2. Process from Raw if needed
         if data_item is None:
-            if not raw_path.exists():
-                print(f"Error: Cache missing and raw data missing for {log_id}")
-                # Fallback to random sample
-                return self.__getitem__(random.randint(0, len(self) - 1))
+            data_item = self._build_from_raw(log_id, raw_path, cached_path)
 
-            try:
-                data_item = self._process_raw_log(raw_path)
-
-                if data_item is not None:
-                    # Save to cache using a temp file + atomic rename to prevent
-                    # corruption if multiple workers write or process is interrupted
-                    tmp_path = cached_path.with_suffix(".tmp")
-                    torch.save(data_item, tmp_path)
-                    try:
-                        tmp_path.rename(cached_path)
-                    except OSError:
-                        # Windows sometimes struggles with atomic renames of existing files
-                        if not cached_path.exists():
-                            tmp_path.rename(cached_path)
-                        else:
-                            os.remove(tmp_path)
-            except Exception as e:
-                print(f"Failed to process {log_id}: {e}")
-
-        # 3. Validation
         if data_item is None:
             # If processing failed (e.g. empty log or error), skip to another
             return self.__getitem__(random.randint(0, len(self) - 1))
 
-        # 4. Augmentation
         data = self._apply_augmentation(data_item)
+        return self._format_sample(data)
 
-        # 5. Unpack Data
+    # -------------------------------------------------------------------------
+    # IO helpers
+    # -------------------------------------------------------------------------
+    def _load_cache(self, cached_path: Path) -> Optional[Dict[str, Any]]:
+        if not cached_path.exists():
+            return None
+        try:
+            return torch.load(cached_path, map_location="cpu", weights_only=False)
+        except Exception as e:
+            print(f"Error loading cached file {cached_path}: {e}. Retrying raw process.")
+            try:
+                os.remove(cached_path)
+            except OSError:
+                pass
+            return None
+
+    def _save_cache_atomic(self, data_item: Dict[str, Any], cached_path: Path) -> None:
+        tmp_path = cached_path.with_suffix(".tmp")
+        torch.save(data_item, tmp_path)
+        try:
+            tmp_path.rename(cached_path)
+        except OSError:
+            # Windows sometimes struggles with atomic renames of existing files
+            if not cached_path.exists():
+                tmp_path.rename(cached_path)
+            else:
+                os.remove(tmp_path)
+
+    def _build_from_raw(
+        self, log_id: str, raw_path: Path, cached_path: Path
+    ) -> Optional[Dict[str, Any]]:
+        if not raw_path.exists():
+            print(f"Error: Cache missing and raw data missing for {log_id}")
+            return None
+        try:
+            data_item = self._process_raw_log(raw_path)
+            if data_item is not None:
+                self._save_cache_atomic(data_item, cached_path)
+            return data_item
+        except Exception as e:
+            print(f"Failed to process {log_id}: {e}")
+            return None
+
+    def _format_sample(self, data: Dict[str, Any]) -> Dict[str, Any]:
         seq_id = data["SEQ_ID"]
         city_name = data["CITY_NAME"]
         orig = data["ORIG"]
@@ -189,54 +192,8 @@ class AV2SimplDataset(Dataset):
         trajs_data = data["TRAJS"]
         lane_graph = data["LANE_GRAPH"]
 
-        # 6. Split Trajectories into History (Obs) and Future (Fut)
-        # trajs_pos shape: [N_actors, 110, 2]
-        trajs_pos_obs = trajs_data["trajs_pos"][:, : self.history_steps]
-        trajs_ang_obs = trajs_data["trajs_ang"][:, : self.history_steps]
-        trajs_vel_obs = trajs_data["trajs_vel"][:, : self.history_steps]
-        pad_obs = trajs_data["has_flags"][:, : self.history_steps]
-        trajs_type = trajs_data["trajs_type"][:, : self.history_steps]
+        output_trajs = self._build_output_trajs(trajs_data)
 
-        trajs_pos_fut = trajs_data["trajs_pos"][:, self.history_steps :]
-        trajs_ang_fut = trajs_data["trajs_ang"][:, self.history_steps :]
-        trajs_vel_fut = trajs_data["trajs_vel"][:, self.history_steps :]
-        pad_fut = trajs_data["has_flags"][:, self.history_steps :]
-
-        # 7. Construct Output Dictionary
-        output_trajs = {
-            # Observation
-            "TRAJS_POS_OBS": trajs_pos_obs,
-            "TRAJS_ANG_OBS": np.stack(
-                [np.cos(trajs_ang_obs), np.sin(trajs_ang_obs)], axis=-1
-            ),
-            "TRAJS_VEL_OBS": trajs_vel_obs,
-            "TRAJS_TYPE": trajs_type,
-            "PAD_OBS": pad_obs,
-            # Future Ground Truth
-            "TRAJS_POS_FUT": trajs_pos_fut,
-            "TRAJS_ANG_FUT": np.stack(
-                [np.cos(trajs_ang_fut), np.sin(trajs_ang_fut)], axis=-1
-            ),
-            "TRAJS_VEL_FUT": trajs_vel_fut,
-            "PAD_FUT": pad_fut,
-            # Anchors / Metadata
-            "TRAJS_CTRS": trajs_data["trajs_ctrs"],
-            "TRAJS_VECS": trajs_data["trajs_vecs"],
-            "TRAJS_TID": trajs_data["trajs_tid"],  # target id
-            "TRAJS_CAT": trajs_data["trajs_cat"],
-            # Training Mask (Assume all valid loaded actors are trainable)
-            "TRAIN_MASK": np.ones(len(trajs_data["trajs_ctrs"]), dtype=bool),
-        }
-
-        # Yaw Loss Mask: Only apply yaw loss for vehicles/bikes (indices 0, 2, 3, 4)
-        # Object Types: 0:Veh, 1:Ped, 2:Moto, 3:Cyc, 4:Bus, 5:Unknown, 6:Static
-        yaw_loss_mask = np.array(
-            [np.where(x)[0][0] in [0, 2, 3, 4] for x in trajs_type[:, -1]], dtype=bool
-        )
-        output_trajs["YAW_LOSS_MASK"] = yaw_loss_mask
-
-        # 8. Calculate Relative Positional Embeddings (RPE)
-        # Convert to torch for calculation
         scene_ctrs = torch.cat(
             [
                 torch.from_numpy(output_trajs["TRAJS_CTRS"]),
@@ -244,7 +201,6 @@ class AV2SimplDataset(Dataset):
             ],
             dim=0,
         )
-
         scene_vecs = torch.cat(
             [
                 torch.from_numpy(output_trajs["TRAJS_VECS"]),
@@ -264,6 +220,48 @@ class AV2SimplDataset(Dataset):
             "LANE_GRAPH": lane_graph,
             "RPE": rpe,  # list
         }
+
+    def _build_output_trajs(self, trajs_data: Dict[str, np.ndarray]) -> Dict[str, Any]:
+        # Split Trajectories into History (Obs) and Future (Fut)
+        trajs_pos_obs = trajs_data["trajs_pos"][:, : self.history_steps]
+        trajs_ang_obs = trajs_data["trajs_ang"][:, : self.history_steps]
+        trajs_vel_obs = trajs_data["trajs_vel"][:, : self.history_steps]
+        pad_obs = trajs_data["has_flags"][:, : self.history_steps]
+        trajs_type = trajs_data["trajs_type"][:, : self.history_steps]
+
+        trajs_pos_fut = trajs_data["trajs_pos"][:, self.history_steps :]
+        trajs_ang_fut = trajs_data["trajs_ang"][:, self.history_steps :]
+        trajs_vel_fut = trajs_data["trajs_vel"][:, self.history_steps :]
+        pad_fut = trajs_data["has_flags"][:, self.history_steps :]
+
+        output_trajs = {
+            "TRAJS_POS_OBS": trajs_pos_obs,
+            "TRAJS_ANG_OBS": np.stack(
+                [np.cos(trajs_ang_obs), np.sin(trajs_ang_obs)], axis=-1
+            ),
+            "TRAJS_VEL_OBS": trajs_vel_obs,
+            "TRAJS_TYPE": trajs_type,
+            "PAD_OBS": pad_obs,
+            "TRAJS_POS_FUT": trajs_pos_fut,
+            "TRAJS_ANG_FUT": np.stack(
+                [np.cos(trajs_ang_fut), np.sin(trajs_ang_fut)], axis=-1
+            ),
+            "TRAJS_VEL_FUT": trajs_vel_fut,
+            "PAD_FUT": pad_fut,
+            "TRAJS_CTRS": trajs_data["trajs_ctrs"],
+            "TRAJS_VECS": trajs_data["trajs_vecs"],
+            "TRAJS_TID": trajs_data["trajs_tid"],
+            "TRAJS_CAT": trajs_data["trajs_cat"],
+            "TRAIN_MASK": np.ones(len(trajs_data["trajs_ctrs"]), dtype=bool),
+        }
+
+        # Yaw Loss Mask: Only apply yaw loss for vehicles/bikes (indices 0, 2, 3, 4)
+        # Object Types: 0:Veh, 1:Ped, 2:Moto, 3:Cyc, 4:Bus, 5:Unknown, 6:Static
+        yaw_loss_mask = np.array(
+            [np.where(x)[0][0] in [0, 2, 3, 4] for x in trajs_type[:, -1]], dtype=bool
+        )
+        output_trajs["YAW_LOSS_MASK"] = yaw_loss_mask
+        return output_trajs
 
     # =========================================================================
     # PREPROCESSING HELPERS
@@ -808,16 +806,6 @@ class AV2SimplDataset(Dataset):
 
         return agent_feats, agent_masks
 
-        # TODO
-        # Create indices mapping batch items to actors
-        actor_idcs = []
-        count = 0
-        for i in range(batch_size):
-            actor_idcs.append(torch.arange(count, count + num_agents[i]))
-            count += num_agents[i]
-
-        return actors, actor_idcs
-
     def _lane_gather(self, batch_size, graphs):
         """Flattens lane graph features from a batch."""
         lane_idcs = []
@@ -855,34 +843,3 @@ class AV2SimplDataset(Dataset):
             lane_masks[i, : num_lanes[i]] = True
 
         return lane_feats, lane_masks
-
-        # Aggregate fields
-        agg_graph = {}
-        for key in [
-            "node_ctrs",
-            "node_vecs",
-            "intersect",
-            "lane_type",
-            "cross_left",
-            "cross_right",
-            "left",
-            "right",
-        ]:
-            agg_graph[key] = torch.cat([x[key] for x in graphs], 0)
-
-        # Concatenate into single feature vector per lane segment node
-        lanes = torch.cat(
-            [
-                agg_graph["node_ctrs"],
-                agg_graph["node_vecs"],
-                agg_graph["intersect"].unsqueeze(2),
-                agg_graph["lane_type"],
-                agg_graph["cross_left"],
-                agg_graph["cross_right"],
-                agg_graph["left"].unsqueeze(2),
-                agg_graph["right"].unsqueeze(2),
-            ],
-            dim=-1,
-        )
-
-        return lanes, lane_idcs
