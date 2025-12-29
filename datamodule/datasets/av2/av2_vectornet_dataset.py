@@ -16,6 +16,7 @@ from av2.datasets.motion_forecasting.data_schema import (
     TrackCategory,
 )
 
+from .av2_constants import _AGENT_TYPE_MAP, _LANE_TYPE_MAP
 from utils.numpy import to_numpy, from_numpy
 
 
@@ -107,6 +108,8 @@ class AV2VectorNetDataset(Dataset):
             target_agent_idx,
             target_future,
             target_last_pos,
+            agent_types,
+            agent_score_types,
         ) = self._extract_agent_data(scenario)
 
         # * extract lane data
@@ -145,6 +148,8 @@ class AV2VectorNetDataset(Dataset):
             "edge_index_lane_to_lane": lane_edge_index.long(),
             # [2, num_lane_agent_edges]
             "edge_index_lane_to_agent": edge_index_lane_agent.long(),
+            "agent_types": agent_types  ,
+            "agent_score_types": agent_score_types,
         }
         return sample
 
@@ -203,10 +208,12 @@ class AV2VectorNetDataset(Dataset):
         agent_futures: List[torch.Tensor] = []
         agent_future_masks: List[torch.Tensor] = []
         agent_last_positions: List[np.ndarray] = []
+        agent_score_types: List[str] = []
+        agent_types: List[str] = []
         target_agent_idx = 0
 
-        for idx_entry, (track_id, seq) in enumerate(
-            zip(sorted_track_indices, sorted_sequences)
+        for i, (track_idx, seq) in enumerate(
+            zip(sorted_indices, sorted_sequences)
         ):
             if len(agent_histories) >= self.max_agents:
                 break
@@ -227,6 +234,10 @@ class AV2VectorNetDataset(Dataset):
                     seq.features[:, :2], seq.mask, self.history_steps
                 )
             )
+            agent_score_types.append(sorted_categories[i])
+            track = scenario.tracks[track_idx]
+            agent_types.append(_AGENT_TYPE_MAP.get(track.object_type, "unknown"))
+            agent_score_types.append(sorted_categories[i])
 
         agent_history_tensor = (
             torch.stack(agent_histories, dim=0)
@@ -278,6 +289,8 @@ class AV2VectorNetDataset(Dataset):
             target_agent_idx,
             target_future,
             target_last_pos,
+            agent_types,
+            agent_score_types,
         )
 
     def _extract_lane_data(
@@ -588,6 +601,8 @@ class AV2VectorNetDataset(Dataset):
             "scenario_ids": scenario_ids,
             "lane_counts": lane_counts,
             "agent_counts": agent_counts,
+            "agent_types": [atype for sample in batch for atype in sample["agent_types"]],
+            "agent_score_types": [atype for sample in batch for atype in sample["agent_score_types"]],
         }
         return batch_dict
 

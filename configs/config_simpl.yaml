@@ -10,6 +10,10 @@ defaults:
 project_name: simpl
 exp_name: test
 seed: 42
-output_root_dir: ./outputs
-
 resume_from: null
+output_root_dir: ./outputs/${project_name}/${exp_name}/${now:%Y-%m-%d_%H-%M-%S}
+ckpt_dir: ${output_root_dir}/ckpt
+
+hydra:
+  run:
+    dir: ${output_root_dir}

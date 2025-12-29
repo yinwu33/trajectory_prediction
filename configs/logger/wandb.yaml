@@ -1,1 +1,5 @@
-type: wandb
+_target_: pytorch_lightning.loggers.WandbLogger
+project: ${project_name}
+name: ${exp_name}
+save_dir: ${output_root_dir}/wandb
+log_model: false  # TODO

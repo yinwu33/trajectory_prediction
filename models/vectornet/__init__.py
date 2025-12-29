@@ -147,5 +147,6 @@ class VectorNetLightningModule(pl.LightningModule):
             "k": self.model.k,
             "score_types": None,
             "log_id": scenario_id,
-            "agent_types": None,
+            "agent_types": batch["agent_types"][agent_start:agent_end],
+            "score_types": batch["agent_score_types"][agent_start:agent_end],
         }

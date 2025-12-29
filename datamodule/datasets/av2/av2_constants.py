@@ -1,8 +1,17 @@
-_ESTIMATED_VEHICLE_LENGTH_M = 5.0
-_ESTIMATED_VEHICLE_WIDTH_M = 2.0
-_ESTIMATED_CYCLIST_LENGTH_M = 2.0
-_ESTIMATED_CYCLIST_WIDTH_M = 0.7
-_ESTIMATED_PEDESTRIAN_LENGTH_M = 0.3
-_ESTIMATED_PEDESTRIAN_WIDTH_M = 0.5
-_ESTIMATED_BUS_LENGTH_M = 7.0
-_ESTIMATED_BUS_WIDTH_M = 2.1
+from av2.datasets.motion_forecasting.data_schema import ObjectType
+from av2.map.lane_segment import LaneType
+
+_AGENT_TYPE_MAP = {
+    ObjectType.VEHICLE: 0,
+    ObjectType.PEDESTRIAN: 1,
+    ObjectType.MOTORCYCLIST: 2,
+    ObjectType.CYCLIST: 3,
+    ObjectType.BUS: 4,
+    ObjectType.UNKNOWN: 5,
+}
+
+_LANE_TYPE_MAP = {
+    LaneType.VEHICLE: 0,
+    LaneType.BIKE: 1,
+    LaneType.BUS: 2,
+}

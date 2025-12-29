@@ -17,15 +17,10 @@ from callbacks.viz import TrajectoryVisualizationCallback
 def build_callbacks(cfg: DictConfig) -> list[pl.Callback]:
     callbacks = []
 
-    filename_fmt = (
-        f"{cfg['project_name']}_{cfg['exp_name']}"
-        + "_epoch_{epoch:02d}_loss_{val/loss:.4f}"
-    )
-
     checkpoint_callback = ModelCheckpoint(
         monitor="val/loss",
-        dirpath=Path(cfg.output_root_dir) / "ckpt",
-        filename=filename_fmt,
+        dirpath=Path(cfg.ckpt_dir),
+        filename="epoch_{epoch:02d}_loss_{val/loss:.4f}",
         save_top_k=3,
         save_last=True,
         mode="min",
@@ -53,19 +48,7 @@ def main(cfg: DictConfig) -> None:
     if cfg.trainer.profiler is not None:
         cfg.trainer.max_epochs = 3
 
-    if cfg.logger.type == "wandb":
-        logger = WandbLogger(
-            project=cfg.project_name,
-            name=cfg.exp_name,
-            save_dir=cfg.output_root_dir,
-            log_model=False,
-        )
-    else:
-        logger = TensorBoardLogger(
-            save_dir=cfg.output_root_dir,
-            name=f"{cfg.project_name}/{cfg.exp_name}",
-        )
-
+    logger = instantiate(cfg.logger)
     logger.log_hyperparams(cfg)
     trainer = pl.Trainer(
         logger=logger,
