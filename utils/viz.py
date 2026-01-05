@@ -1,5 +1,6 @@
 from __future__ import annotations
 import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon
 from typing import Optional
 from .viz_av2 import AV2MapVisualizer
 
@@ -57,8 +58,8 @@ def plot_scenario(
     agent_hist_mask: torch.Tensor | np.ndarray,
     agent_fut_mask: torch.Tensor | np.ndarray,
     agent_last_pos: torch.Tensor | np.ndarray,
-    # agent_last_ang: torch.Tensor | np.ndarray,
-    target_agent_idx: int,
+    agent_last_ang: torch.Tensor | np.ndarray | None = None,
+    target_agent_idx: int = 0,
     preds: torch.Tensor | np.ndarray | None = None,
     probs: torch.Tensor | None = None,
     scenario_id: str | None = None,
@@ -75,6 +76,7 @@ def plot_scenario(
     agent_future_np = to_numpy(agent_fut_pos)  # (num_agents, fut_len, 2)
     agent_future_mask_np = to_numpy(agent_fut_mask)  # (num_agents, fut_len)
     agent_last_pos_np = to_numpy(agent_last_pos)  # (num_agents, 2)
+    agent_last_ang_np = to_numpy(agent_last_ang) if agent_last_ang is not None else None
     preds_np = to_numpy(preds) if preds is not None else None
     probs_np = to_numpy(probs) if probs is not None else None
 
@@ -82,6 +84,8 @@ def plot_scenario(
     valid_indices = np.where(valid_agents)[0]
     num_agents = valid_agents.sum()
     agent_history_np = agent_history_np[valid_agents]
+    if agent_last_ang_np is not None:
+        agent_last_ang_np = agent_last_ang_np[valid_agents]
 
     fig, ax = plt.subplots(figsize=(6, 6), dpi=300)
 
@@ -108,6 +112,10 @@ def plot_scenario(
             agent_label = None
             current_only = True
 
+        heading = None
+        if agent_last_ang_np is not None:
+            heading = float(agent_last_ang_np[idx])
+
         ax = _plot_agent(
             ax,
             agent_history_np[idx],
@@ -119,6 +127,7 @@ def plot_scenario(
             label=agent_label,
             current_only=current_only,
             agent_type=agent_type,
+            agent_heading=heading,
         )
 
     # plot predictions
@@ -195,6 +204,7 @@ def _plot_agent(
     label: Optional[str] = None,
     current_only: bool = True,
     agent_type: str = "default",
+    agent_heading: Optional[float] = None,
 ):
 
     if not current_only:
@@ -218,27 +228,50 @@ def _plot_agent(
             label=f"{label} future" if label is not None else None,
             zorder=2,
         )
-    ax.scatter(
-        agent_last_pos_np[0],
-        agent_last_pos_np[1],
-        color=color_map[2],
-        s=_POINT_SIZE,
-        zorder=5,
-    )
+        ax.scatter(
+            traj_future[-1, 0],
+            traj_future[-1, 1],
+            color=color_map[1],
+            marker="*",
+            s=_POINT_SIZE * 2,
+            zorder=6,
+        )
+    bbox_drawn = False
+    bbox_dims = _AGENT_BBOX.get(agent_type)
+    if bbox_dims is not None and agent_heading is not None:
+        half_len = bbox_dims[0] * 0.5
+        half_wid = bbox_dims[1] * 0.5
+        corners = np.array(
+            [
+                [half_len, half_wid],
+                [half_len, -half_wid],
+                [-half_len, -half_wid],
+                [-half_len, half_wid],
+            ]
+        )
+        c, s = np.cos(agent_heading), np.sin(agent_heading)
+        rot = np.array([[c, -s], [s, c]])
+        rotated = corners @ rot.T
+        translated = rotated + agent_last_pos_np
+        patch = Polygon(
+            translated,
+            closed=True,
+            edgecolor=color_map[2],
+            facecolor="none",
+            linewidth=_LINE_WIDTH,
+            zorder=4,
+        )
+        ax.add_patch(patch)
+        bbox_drawn = True
 
-    # TODO: heading angle
-    # if agent_type in _AGENT_BBOX:
-    #     bbox_len, bbox_wid = _AGENT_BBOX[agent_type]
-    #     ax.add_patch(plt.Rectangle(
-    #         (agent_last_pos_np[0] - bbox_len / 2, agent_last_pos_np[1] - bbox_wid / 2),
-    #         bbox_len,
-    #         bbox_wid,
-    #         angle=0.0,
-    #         edgecolor=color_map[2],
-    #         facecolor='none',
-    #         linewidth=0.5,
-    #         zorder=4,
-    #     ))
+    if not bbox_drawn:
+        ax.scatter(
+            agent_last_pos_np[0],
+            agent_last_pos_np[1],
+            color=color_map[2],
+            s=_POINT_SIZE,
+            zorder=5,
+        )
 
     return ax
 

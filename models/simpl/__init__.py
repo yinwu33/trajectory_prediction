@@ -13,10 +13,10 @@ class SimplLightningModule(pl.LightningModule):
     def __init__(self, cfg, *args, **kwargs):
         super().__init__()
         self.cfg = cfg
-        
+
         self.model = Simpl(*args, **kwargs)
         self.k = self.model.pred_net.k
-        
+
         self.save_hyperparameters()
 
     def forward(self, batch: dict) -> torch.Tensor:
@@ -36,7 +36,7 @@ class SimplLightningModule(pl.LightningModule):
         return {
             **losses,
             "pred": post_out[1],
-            "logits": post_out[0],
+            "probs": post_out[0],
         }
 
     def validation_step(self, batch: dict, batch_idx: int):
@@ -61,7 +61,7 @@ class SimplLightningModule(pl.LightningModule):
         return {
             **losses,
             "pred": post_out[1],
-            "logits": post_out[0],
+            "probs": post_out[0],
         }
 
     def test_step(self, batch: dict, batch_idx: int):
@@ -87,11 +87,11 @@ class SimplLightningModule(pl.LightningModule):
         return {
             **losses,
             "pred": post_out[1],
-            "logits": post_out[0],
+            "probs": post_out[0],
         }
 
     def _post_process(self, out: tuple, batch: dict) -> dict:
-        res_cls, res_reg, res_aux = out
+        res_logits, res_reg, res_aux = out
         agent_last_pos_global = batch["agent_last_pos"]
         agent_last_rot_global = batch["agent_last_rot"]
 
@@ -101,15 +101,14 @@ class SimplLightningModule(pl.LightningModule):
 
         res_reg_global = []
         for i in range(B):
-            mask = agent_history_mask[i]
-            valid_agents = mask.any(dim=1)  # (num_agents,)
+            valid_agents = agent_history_mask[i].any(dim=1)  # (num_agents,)
             R = agent_last_rot_global[i][valid_agents]  # (num_valid, 2, 2)
             t = agent_last_pos_global[i][valid_agents]  # (num_valid,
             res_reg_global.append(
                 self._agent_frame_to_global(res_reg[i], R, t, k_dim=1)
             )
 
-        return res_cls, res_reg_global, res_aux
+        return res_logits, res_reg_global, res_aux
 
     def calculate_metrics(self, pred: list, batch: torch.Tensor) -> dict:
         """Calculate minADE and minFDE for given predictions and ground truth.
@@ -176,15 +175,6 @@ class SimplLightningModule(pl.LightningModule):
             },
         }
 
-    def run_forward_postprocess(self, batch: dict) -> torch.Tensor:
-        out = self.model(batch)
-        out_post = self.model.post_process(out)
-
-        pred = out_post["traj_pred"]
-        prob = out_post["prob_pred"]
-
-        return pred, prob
-
     def _agent_frame_to_global(self, pts, R, t, k_dim=None):
         # pts: (..., N, T, 2)
         # R:   (..., N, 2, 2)
@@ -221,7 +211,7 @@ class SimplLightningModule(pl.LightningModule):
         valid_agent_history = agent_history[agent_history_mask.any(-1)]
         agent_types = []
         for agent in valid_agent_history:
-            obj_type_onehot = agent[:, 7:14].sum(dim=0)  # (7,)
+            obj_type_onehot = agent[:, 6:13].sum(dim=0)  # (7,)
             obj_type_idx = torch.argmax(obj_type_onehot).item()
             if obj_type_idx == 0:
                 agent_types.append("vehicle")
@@ -233,8 +223,10 @@ class SimplLightningModule(pl.LightningModule):
                 agent_types.append("cyclist")
             elif obj_type_idx == 4:
                 agent_types.append("bus")
-            else:
+            elif obj_type_idx == 5:
                 agent_types.append("unknown")
+            else:  # 6
+                agent_types.append("default")
         return agent_types
 
     def create_scenario(self, batch, outputs, index: int = 0):
@@ -248,9 +240,10 @@ class SimplLightningModule(pl.LightningModule):
         with torch.no_grad():
             out = self.model(batch)
             post_out = self._post_process(out, batch)
-        logits = post_out[0][index]  # traj logits for all agents
+        logits = post_out[0][index]  # traj probs for all agents
         preds = post_out[1][index]  # traj preds for all agents
-        probs = torch.softmax(logits, dim=0)
+
+        probs = torch.softmax(logits, dim=-1)
 
         # gather current sample
         lane_feats = batch["lane_feats"][index]
@@ -274,6 +267,7 @@ class SimplLightningModule(pl.LightningModule):
         agent_last_pos_global = batch["agent_last_pos"][index]
         agent_last_rot_global = batch["agent_last_rot"][index]
         agent_types = self._get_agent_types(batch, index)
+        agent_last_ang = batch["agent_last_ang"][index]
 
         # gathre predictions
         focal_agent_idx = 0
@@ -324,12 +318,13 @@ class SimplLightningModule(pl.LightningModule):
             "agent_hist_mask": _detach(agent_history_mask.bool()),
             "agent_fut_mask": _detach(agent_future_mask.bool()),
             "agent_last_pos": _detach(agent_last_pos_global),
+            "agent_last_ang": _detach(agent_last_ang),
             "target_agent_idx": target_agent_idx,
             "preds": _detach(preds),
             "probs": _detach(probs),
             "scenario_id": batch["scenario_id"][index],
             "k": self.model.k,
             "score_types": batch["agent_score_types"][index],
-            "log_id": batch["scenario_id"][index],
+            # "log_id": batch["scenario_id"][index],
             "agent_types": agent_types,
         }

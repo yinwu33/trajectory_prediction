@@ -1,44 +1,21 @@
-from pathlib import Path
-
 import torch
 
 torch.set_float32_matmul_precision("high")  # high / medium
 import hydra
 from hydra.utils import instantiate
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
-from pytorch_lightning.profilers import AdvancedProfiler
-
-from callbacks.viz import TrajectoryVisualizationCallback
-
 
 def build_callbacks(cfg: DictConfig) -> list[pl.Callback]:
-    callbacks = []
-
-    checkpoint_callback = ModelCheckpoint(
-        monitor="val/loss",
-        dirpath=Path(cfg.ckpt_dir),
-        filename="epoch_{epoch:02d}_loss_{val/loss:.4f}",
-        save_top_k=3,
-        save_last=True,
-        mode="min",
-        auto_insert_metric_name=False,
-    )
-    callbacks.append(checkpoint_callback)
-
-    lr_monitor = LearningRateMonitor(logging_interval="step")
-    callbacks.append(lr_monitor)
-
-    viz = TrajectoryVisualizationCallback(every_n_epochs=1)
-    callbacks.append(viz)
-
-    return callbacks
+    callback_cfgs = cfg.get("callbacks")
+    if not callback_cfgs:
+        return []
+    return [instantiate(cb_cfg, _recursive_=False) for cb_cfg in callback_cfgs]
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="config_vectornet")
 def main(cfg: DictConfig) -> None:
+    OmegaConf.resolve(cfg)
     pl.seed_everything(cfg.seed)
 
     dm = instantiate(cfg.datamodule, cfg=cfg, _recursive_=False)

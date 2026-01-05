@@ -12,6 +12,7 @@ class LossFunc(nn.Module):
     def __init__(self, cfg):
         super(LossFunc, self).__init__()
         self.config = cfg
+        self.k = cfg.k
 
         self.yaw_loss = cfg.yaw_loss
         self.reg_loss = nn.SmoothL1Loss(reduction="sum")
@@ -180,33 +181,33 @@ class LossFunc(nn.Module):
         gt_preds: List[torch.Tensor],
         pad_flags: List[torch.Tensor],
     ):
-        cls = torch.cat([x for x in cls], 0)  # [98, 6]
-        reg = torch.cat([x for x in reg], 0)  # [98, 6, 60, 2]
-        gt_preds = torch.cat([x for x in gt_preds], 0)  # [98, 60, 2]
-        has_preds = torch.cat([x for x in pad_flags], 0).bool()  # [98, 60]
+        probs = torch.cat([x for x in cls], 0)  # [N, 6]
+        reg = torch.cat([x for x in reg], 0)  # [N, 6, 60, 2]
+        gt_preds = torch.cat([x for x in gt_preds], 0)  # [N, 60, 2]
+        valid_masks = torch.cat([x for x in pad_flags], 0).bool()  # [N, 60]
 
         loss_out = dict()
-        num_modes = self.config.k
-        num_preds = self.config.global_pred_lane
+        fut_steps = self.config.global_pred_lane
         # assert(has_preds.all())
 
-        last = has_preds.float() + 0.1 * torch.arange(
-            num_preds, device=has_preds.device, dtype=torch.float32
-        ).float() / float(num_preds)
+        # find the last valid index
+        last = valid_masks.float() + 0.1 * torch.arange(
+            fut_steps, device=valid_masks.device, dtype=torch.float32
+        ).float() / float(fut_steps)
         max_last, last_idcs = last.max(1)
-        mask = max_last > 1.0
+        mask = max_last >= 1.0 
 
-        cls = cls[mask]
+        probs = probs[mask]
         reg = reg[mask]
         gt_preds = gt_preds[mask]
-        has_preds = has_preds[mask]
+        valid_masks = valid_masks[mask]
         last_idcs = last_idcs[mask]
 
         _reg = reg[..., 0:2].clone()  # for WTA strategy
 
         row_idcs = torch.arange(len(last_idcs)).long()
         dist = []
-        for j in range(num_modes):
+        for j in range(self.k):
             dist.append(
                 torch.sqrt(
                     (
@@ -219,18 +220,18 @@ class LossFunc(nn.Module):
         min_dist, min_idcs = dist.min(1)
         row_idcs = torch.arange(len(min_idcs)).long()
 
-        mgn = cls[row_idcs, min_idcs].unsqueeze(1) - cls
-        mask0 = (min_dist < self.config.cls_thres).view(-1, 1)
-        mask1 = dist - min_dist.view(-1, 1) > self.config.cls_ignore
-        mgn = mgn[mask0 * mask1]
-        mask = mgn < self.config.mgn
+        mgn = probs[row_idcs, min_idcs].unsqueeze(1) - probs
+        mask0 = (min_dist < self.config.cls_thres).view(-1, 1)  # only train cls for close preds
+        mask1 = dist - min_dist.view(-1, 1) > self.config.cls_ignore  # ignore close preds
+        mgn = mgn[mask0 & mask1]
+        mask = mgn < self.config.mgn # for bad winners
         num_cls = mask.sum().item()
         cls_loss = (self.config.mgn * mask.sum() - mgn[mask].sum()) / (num_cls + 1e-10)
         loss_out["cls_loss"] = self.config.cls_coef * cls_loss
 
         reg = reg[row_idcs, min_idcs]
-        num_reg = has_preds.sum().item()
-        reg_loss = self.reg_loss(reg[has_preds], gt_preds[has_preds]) / (
+        num_reg = valid_masks.sum().item()
+        reg_loss = self.reg_loss(reg[valid_masks], gt_preds[valid_masks]) / (
             num_reg + 1e-10
         )
         loss_out["reg_loss"] = self.config.reg_coef * reg_loss

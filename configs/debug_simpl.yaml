@@ -9,7 +9,7 @@ defaults:
   - _self_
 
 project_name: simpl
-exp_name: test
+exp_name: debug
 seed: 42
 resume_from: null
 output_root_dir: ./outputs/${project_name}/${exp_name}/${now:%Y-%m-%d_%H-%M-%S}
@@ -20,6 +20,25 @@ hydra:
     dir: ${output_root_dir}
 
 trainer:
-  max_epochs: 50
+  max_epochs: 100
+  overfit_batches: 1
+  log_every_n_steps: 1
+  detect_anomaly: true
+  enable_model_summary: true
+
+model:
+  lane_net_cfg:
+    dropout: 0.0
+  fusion_net_cfg:
+    dropout: 0.0
+
+optimizer:
+  warmup_ratio: 0.0
+  lr: 1e-3
+  weight_decay: 0.0
+
 datamodule:
-  batch_size: 16
+  num_workers: 0
+  batch_size: 4
+  dataset:
+    preprocess: false

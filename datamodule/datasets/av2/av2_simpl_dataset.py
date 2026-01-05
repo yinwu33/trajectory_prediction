@@ -140,12 +140,12 @@ class AV2SimplDataset(AV2BaseDataset):
 
         agent_history_feat = np.concatenate(
             [
-                hist_disp,
-                hist_cos,
-                hist_sin,
-                agent_vel_local[:, : self.hist_steps, :],
-                agent_type_hist,
-                agent_valid_mask_float[:, : self.hist_steps, None],
+                hist_disp,  # 2
+                hist_cos,  # 1
+                hist_sin,  # 1
+                agent_vel_local[:, : self.hist_steps, :],  # 2
+                agent_type_hist,  # 7
+                agent_valid_mask_float[:, : self.hist_steps, None],  # 1
             ],
             axis=-1,
         ).astype(np.float32)
@@ -173,6 +173,7 @@ class AV2SimplDataset(AV2BaseDataset):
             "agent_future_ang": fut_cossin_global,
             "agent_future_mask": fut_valid_mask,
             "agent_last_pos": agent_last_pos_global,
+            "agent_last_ang": agent_last_ang_global,
             "agent_last_rot": agent_last_rot_global,
             "focal_agent_pos": agent_last_pos_global[0],
             "focal_agent_rot": agent_last_rot_global[0],
@@ -298,7 +299,8 @@ class AV2SimplDataset(AV2BaseDataset):
 
     def _actor_gather(self, batch_size, batch):
         num_agents = [x.shape[0] for x in batch["agent_history"]]
-        max_agents = max(num_agents)
+        # max_agents = max(num_agents)
+        max_agents = self.max_agents
 
         b_agent_history = torch.zeros(
             [batch_size, max_agents, self.hist_steps - self.truncate_steps, 14]
@@ -313,6 +315,7 @@ class AV2SimplDataset(AV2BaseDataset):
             [batch_size, max_agents, self.fut_steps], dtype=torch.bool
         )
         b_agent_last_pos = torch.zeros([batch_size, max_agents, 2])
+        b_agent_last_ang = torch.zeros([batch_size, max_agents])
         b_agent_last_rot = torch.zeros([batch_size, max_agents, 2, 2])
         b_yaw_loss_mask = torch.zeros([batch_size, max_agents], dtype=torch.bool)
         for i in range(batch_size):
@@ -322,6 +325,7 @@ class AV2SimplDataset(AV2BaseDataset):
             b_agent_future_ang[i, : num_agents[i]] = batch["agent_future_ang"][i]
             b_agent_future_mask[i, : num_agents[i]] = batch["agent_future_mask"][i]
             b_agent_last_pos[i, : num_agents[i]] = batch["agent_last_pos"][i]
+            b_agent_last_ang[i, : num_agents[i]] = batch["agent_last_ang"][i]
             b_agent_last_rot[i, : num_agents[i]] = batch["agent_last_rot"][i]
             b_yaw_loss_mask[i, : num_agents[i]] = batch["yaw_loss_mask"][i]
 
@@ -332,6 +336,7 @@ class AV2SimplDataset(AV2BaseDataset):
             "agent_future_ang": b_agent_future_ang,
             "agent_future_mask": b_agent_future_mask,
             "agent_last_pos": b_agent_last_pos,
+            "agent_last_ang": b_agent_last_ang,
             "agent_last_rot": b_agent_last_rot,
             "yaw_loss_mask": b_yaw_loss_mask,
             "focal_agent_pos": torch.stack(batch["focal_agent_pos"], dim=0),
@@ -341,7 +346,8 @@ class AV2SimplDataset(AV2BaseDataset):
 
     def _lane_gather(self, batch_size, graphs):
         num_lanes = graphs["num_lanes"]
-        max_lanes = max(num_lanes) if num_lanes else 0
+        # max_lanes = max(num_lanes) if num_lanes else 0
+        max_lanes = self.max_lanes
 
         lane_feats = torch.zeros([batch_size, max_lanes, self.num_lane_nodes, 16])
         lane_masks = torch.zeros([batch_size, max_lanes], dtype=torch.bool)

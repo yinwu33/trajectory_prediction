@@ -1,11 +1,12 @@
 defaults:
-  - _self_
   - datamodule: av2_vectornet
   - model: vectornet
   - trainer: default
   - logger: wandb
+  - callbacks: default
   - optimizer: adamw
   - experiment: null
+  - _self_
 
 project_name: vectornet
 exp_name: test

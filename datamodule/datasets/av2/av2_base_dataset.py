@@ -194,9 +194,15 @@ class AV2BaseDataset(Dataset):
             anchor_ang[:, None],
         )
 
-        lane_points = data["lane_points"]
-        lane_anchor_pos = lane_points[:, 0, :]
-        lane_anchor_vec = lane_points[:, 1, :] - lane_points[:, 0, :]
+        lane_points = data["lane_points"]  # [M, num_points_per_lane, 2]
+        # lane_anchor_pos = lane_points[:, 0, :]
+        # lane_anchor_vec = lane_points[:, 1, :] - lane_points[:, 0, :]
+        # above uses first segment to define anchor frame, below uses middle point
+        lane_anchor_pos = lane_points[:, self.num_lane_nodes // 2, :]
+        lane_anchor_vec = (
+            lane_points[:, self.num_lane_nodes // 2 + 1, :]
+            - lane_points[:, self.num_lane_nodes // 2 - 1, :]
+        )
         lane_anchor_ang = np.arctan2(lane_anchor_vec[:, 1], lane_anchor_vec[:, 0])
         lane_points_local = self.transform_global_to_local(
             lane_points,
@@ -230,7 +236,14 @@ class AV2BaseDataset(Dataset):
 
         # * extract data
         lane_data_dict = self._extract_lane_data(static_map)
-        agent_data_dict = self._extract_agent_data(scenario)
+        agent_data_dict = self._extract_agent_data(
+            scenario,
+            lane_points=lane_data_dict["lane_points"],
+        )
+        lane_data_dict = self._filter_lanes_topk(
+            lane_data_dict,
+            center=agent_data_dict["agent_last_positions"][0],
+        )
 
         sample = {
             "scenario_id": log_id,
@@ -240,7 +253,11 @@ class AV2BaseDataset(Dataset):
         }
         return sample
 
-    def _extract_agent_data(self, scenario: ArgoverseScenario):
+    def _extract_agent_data(
+        self,
+        scenario: ArgoverseScenario,
+        lane_points: Optional[np.ndarray] = None,
+    ):
         """
         Extracts, filters, normalizes, and pads trajectories.
         lane_points: [num_lanes, num_points_per_lane, 2]
@@ -295,6 +312,13 @@ class AV2BaseDataset(Dataset):
         agent_type_list = []
         valid_mask_list = []
         # * get original scene-centric agent trajectories
+        lane_points_cache = None
+        if lane_points is not None:
+            lane_points_cache = np.expand_dims(
+                lane_points.reshape(-1, 2),
+                axis=0,
+            )
+
         for i, track_idx in enumerate(sorted_indices):
             track = scenario.tracks[track_idx]
 
@@ -312,6 +336,17 @@ class AV2BaseDataset(Dataset):
                 or self.curr_step_idx not in i_agent_ts
             ):
                 continue
+
+            if not self._agent_passes_filters(
+                score_type=sorted_score_types[i],
+                timestamps=i_agent_ts,
+                positions=i_agent_pos,
+                lane_points_cache=lane_points_cache,
+            ):
+                continue
+
+            if len(agent_pos_global_list) >= self.max_agents:
+                break
 
             idx_at_curr = np.where(i_agent_ts == self.curr_step_idx)[0][0]
 
@@ -391,6 +426,33 @@ class AV2BaseDataset(Dataset):
             "agent_types": agent_type_np,
             "agent_score_types": agent_score_type_np,
         }
+
+    def _agent_passes_filters(
+        self,
+        score_type: int,
+        timestamps: np.ndarray,
+        positions: np.ndarray,
+        lane_points_cache: Optional[np.ndarray],
+    ) -> bool:
+        """Apply per-agent filters before stacking into tensors."""
+        if lane_points_cache is not None and score_type in {
+            _AGENT_SCORE_TYPE_MAP["unscore"],
+            _AGENT_SCORE_TYPE_MAP["frag"],
+        }:
+            history_mask = timestamps <= self.curr_step_idx
+            if not history_mask.any():
+                return False
+            agent_history_points = np.expand_dims(
+                positions[history_mask],
+                axis=1,
+            )
+            dist = np.linalg.norm(
+                agent_history_points - lane_points_cache,
+                axis=-1,
+            )
+            if np.min(dist) > self.min_dist_threshold:
+                return False
+        return True
 
     def _padding_nearest_neighbor(self, traj):
         """Fills NaNs/Nones with the nearest valid value (forward then backward)."""
@@ -488,15 +550,65 @@ class AV2BaseDataset(Dataset):
         has_left_nb_np = np.array(has_left_nb_list).astype(np.int16)  # [M, ]
         has_right_nb_np = np.array(has_right_nb_list).astype(np.int16)  # [M, ]
 
-        return {
-            "lane_points": lane_points_np,  # [M, 11, 2]
-            "lane_types": lane_types_np,  # [M, 3]
-            "lane_is_intersect": lane_is_intersect_np,  # [M, ]
-            "left_marks": left_mark_np,  # [M, 10, 3]
-            "right_marks": right_mark_np,  # [M, 10, 3]
-            "has_left_nb": has_left_nb_np,  # [M, 10]
-            "has_right_nb": has_right_nb_np,  # [M, 10]
+        lane_data = {
+            "lane_points": lane_points_np,
+            "lane_types": lane_types_np,
+            "lane_is_intersect": lane_is_intersect_np,
+            "left_marks": left_mark_np,
+            "right_marks": right_mark_np,
+            "has_left_nb": has_left_nb_np,
+            "has_right_nb": has_right_nb_np,
         }
+        return lane_data
+
+    def _filter_lanes_topk(
+        self,
+        lane_data: Dict[str, np.ndarray],
+        center: np.ndarray,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Filter lane segments to top-k (closest to ego_xy).
+
+        Args:
+            lane_data:
+                dict that contains at least:
+                - "lane_points": np.ndarray, shape [M, P, 2]
+                and optionally other fields with first dim M
+            ego_xy:
+                np.ndarray shape [2,], ego position in the same coord as lane_points
+            max_lanes:
+                int, keep at most this many lane segments; if None, use self.max_lanes
+
+        Returns:
+            filtered lane_data dict with first dim <= max_lanes
+        """
+        # no limit
+        if self.max_lanes is None:
+            return lane_data
+
+        lane_points = lane_data["lane_points"]
+
+        M = lane_points.shape[0]
+        if M <= self.max_lanes:
+            return lane_data
+
+        center = np.asarray(center, dtype=np.float32).reshape(1, 1, 2)
+
+        # center of each lane segment: [M, 2]
+        centers = lane_points.mean(axis=1, keepdims=True)  # [M,1,2]
+        d2 = np.sum((centers - center) ** 2, axis=2).reshape(-1)  # [M]
+        keep = np.argsort(d2)[: self.max_lanes]  # [K]
+
+        # Filter all fields that have first dim == M
+        filtered: Dict[str, Any] = {}
+        for k, v in lane_data.items():
+            if isinstance(v, np.ndarray) and v.shape[0] == M:
+                filtered[k] = v[keep]
+            else:
+                # keep unchanged (or drop if你希望严格一致也行)
+                filtered[k] = v
+
+        return filtered
 
     def transform_global_to_local(
         self,
@@ -653,6 +765,10 @@ if __name__ == "__main__":
     axes = np.atleast_1d(axes).flatten()
 
     for ax, (name, sample) in zip(axes, views.items()):
+        num_agents = sample["agent_positions"].shape[0]
+        lane_points = sample.get("lane_points")
+        num_lanes = lane_points.shape[0] if lane_points is not None else 0
+        print(f"{name}: agents={num_agents}, lanes={num_lanes}")
         _plot_scene(ax, sample, title=name)
 
     # Hide unused axes

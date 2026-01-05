@@ -318,12 +318,12 @@ class LaneNet(nn.Module):
 
     def forward(self, x):
         # input: (num_lanes, 10, input_dim)
-        B, N, D, T = x.shape
-        x = x.reshape(B * N, D, T)
+        B, N_lane, N_pts, D = x.shape
+        x = x.reshape(B * N_lane, N_pts, D)
         feats = self.proj(x)  # (num_lanes, 10, hidden_size)
         feats = self.aggre1(feats)  # (num_lanes, 10, hidden_size)
         feats = self.aggre2(feats)  # (num_lanes, hidden_size)
-        feats = feats.reshape(B, N, -1)
+        feats = feats.reshape(B, N_lane, -1)
         return feats
 
 
@@ -340,12 +340,25 @@ class SftLayer(nn.Module):
         super(SftLayer, self).__init__()
         self.update_edge = update_edge
 
-        self.proj_memory = nn.Sequential(
-            nn.Linear(node_dim + node_dim + edge_dim, node_dim),
+        self.proj_src = nn.Sequential(
+            nn.Linear(node_dim, node_dim),
             nn.LayerNorm(node_dim),
             nn.ReLU(inplace=True),
         )
-
+        self.proj_tgt = nn.Sequential(
+            nn.Linear(node_dim, node_dim),
+            nn.LayerNorm(node_dim),
+            nn.ReLU(inplace=True),
+        )
+        self.proj_edge = nn.Sequential(
+            nn.Linear(edge_dim, node_dim),
+            nn.LayerNorm(node_dim),
+            nn.ReLU(inplace=True),
+        )
+        self.proj_memory = nn.Sequential(
+            nn.Linear(node_dim, node_dim),
+            nn.LayerNorm(node_dim),
+        )
         if self.update_edge:
             self.proj_edge = nn.Sequential(
                 nn.Linear(node_dim, edge_dim),
@@ -375,6 +388,53 @@ class SftLayer(nn.Module):
     def forward(
         self, node: Tensor, edge: Tensor, node_mask: Tensor, edge_mask: Tensor
     ) -> Tensor:
+        # return self.forward_sequential(node, edge, node_mask, edge_mask)
+        return self.forward_parallel(node, edge, node_mask, edge_mask)
+
+    def forward_sequential(
+        self, node: Tensor, edge: Tensor, node_mask: Tensor, edge_mask: Tensor
+    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
+        # node: [B, N, D]
+        # edge: [B, N, N, D_edge]
+        # node_mask: [B, N] (True 为有效节点)
+
+        B, N, D = node.shape
+
+        x, edge, memory = self._build_memory(node, edge)
+
+        output_node = torch.zeros_like(node)
+
+        for i in range(B):
+            x_i = x[i]  # [N, D]
+            x_mha = x_i.unsqueeze(0)  # [1, N, D]
+
+            memory_mha = memory[i].transpose(0, 1)  # [N_tar, N_src, D]
+
+            m_b = node_mask[i]  # [N]
+            mask_mha = ~m_b.unsqueeze(0).expand(N, N)  # [N, N], True 表示要 Mask 掉
+
+            # --- Multi-Head Attention ---
+            x_prime, _ = self._mha_block(
+                x_mha, memory_mha, attn_mask=None, key_padding_mask=mask_mha
+            )
+
+            # --- 后处理 (Reshape & Residual) ---
+            # x_prime 从 [1, N, D] 变回 [N, D]
+            x_prime = x_prime.squeeze(0)
+
+            # 残差连接 + LayerNorm (第一部分: Attention)
+            h = self.norm2(x_i + x_prime)
+
+            # 残差连接 + LayerNorm (第二部分: FFN)
+            h = self.norm3(h + self._ff_block(h))
+
+            output_node[i] = h
+
+        return output_node, edge, None
+
+    def forward_parallel(
+        self, node: Tensor, edge: Tensor, node_mask: Tensor, edge_mask: Tensor
+    ) -> Tensor:
         # node: [B, Nmax, D]
         # edge: [B, Nmax, Nmax, D]
         # node_mask: [B, Nmax]
@@ -400,6 +460,7 @@ class SftLayer(nn.Module):
         # 4. Reshape back & Residual
         # (1, B*N, D) -> (B, N, D)
         x_prime = x_prime.reshape(B, N, D)
+        x_prime = x_prime * node_mask.unsqueeze(-1)
 
         # Residual + Norm
         x = self.norm2(node + x_prime)
@@ -427,9 +488,10 @@ class SftLayer(nn.Module):
         # 1. build memory
         src_x = node[:, :, None, :].expand([B, N, N, D])
         tar_x = node[:, None, :, :].expand([B, N, N, D])
-        memory = self.proj_memory(
-            torch.cat([edge, src_x, tar_x], dim=-1)
+        memory = (
+            self.proj_src(src_x) + self.proj_tgt(tar_x) + self.proj_edge(edge)
         )  # [B, N, N, D]
+        memory = self.proj_memory(memory)
         # memory = memory.masked_fill(~node_mask[..., None], 0.0)
 
         # 2. (optional) update edge (with residual)
@@ -502,7 +564,7 @@ class SymmetricFusionTransformer(nn.Module):
         self.fusion = nn.ModuleList(fusion)
 
     def forward(
-        self, feats: Tensor, rpe: Tensor, feats_mask: Tensor, rpe_mask
+        self, feats: Tensor, rpe: Tensor, feats_mask: Tensor, rpe_mask: Tensor
     ) -> Tensor:
         """
         feats: (B, N, D)
@@ -510,8 +572,9 @@ class SymmetricFusionTransformer(nn.Module):
         rpe: (B, N, N, D)
         """
         # attn_multilayer = []
+        edge = rpe
         for mod in self.fusion:
-            feats, masks, _ = mod(feats, rpe, feats_mask, rpe_mask)  # TODO:  mask?
+            feats, edge, _ = mod(feats, edge, feats_mask, rpe_mask)  # TODO:  mask?
             # attn_multilayer.append(attn)
         return feats
 
@@ -568,11 +631,11 @@ class FusionNet(nn.Module):
         # projection
         agent_feats = self.proj_actor(agent_feats.reshape(B * N_a, D))
         agent_feats = agent_feats.reshape(B, N_a, -1)
-        agent_feats = agent_feats.masked_fill(~agent_masks[..., None], 0.0)
+        # agent_feats = agent_feats.masked_fill(~agent_masks[..., None], 0.0)
 
         lane_feats = self.proj_lane(lane_feats.reshape(B * N_l, D))
         lane_feats = lane_feats.reshape(B, N_l, -1)
-        lane_feats = lane_feats.masked_fill(~lane_masks[..., None], 0.0)
+        # lane_feats = lane_feats.masked_fill(~lane_masks[..., None], 0.0)
 
         feats = torch.concat([agent_feats, lane_feats], dim=1)  # [B, Nmax, D]
         feat_masks = torch.concat([agent_masks, lane_masks], dim=1)  # [B, Nmax]
@@ -600,18 +663,17 @@ class MLPDecoder(nn.Module):
         self.param_out = cfg.param_out
         self.N_ORDER = cfg.param_order
 
-        dim_mm = self.hidden_dim * self.k
-        dim_inter = dim_mm // 2
-        self.multihead_proj = nn.Sequential(
-            nn.Linear(self.hidden_dim, dim_inter),
-            nn.LayerNorm(dim_inter),
+        hk_dim = self.hidden_dim * self.k
+        self.mm_proj = nn.Sequential(
+            nn.Linear(self.hidden_dim, hk_dim),
+            nn.LayerNorm(hk_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(dim_inter, dim_mm),
-            nn.LayerNorm(dim_mm),
+            nn.Linear(hk_dim, hk_dim),
+            nn.LayerNorm(hk_dim),
             nn.ReLU(inplace=True),
         )
 
-        self.cls = nn.Sequential(
+        self.cls_proj = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.LayerNorm(self.hidden_dim),
             nn.ReLU(inplace=True),
@@ -636,7 +698,7 @@ class MLPDecoder(nn.Module):
                 ),
             )
 
-            self.reg = nn.Sequential(
+            self.reg_proj = nn.Sequential(
                 nn.Linear(self.hidden_dim, self.hidden_dim),
                 nn.LayerNorm(self.hidden_dim),
                 nn.ReLU(inplace=True),
@@ -645,25 +707,8 @@ class MLPDecoder(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Linear(self.hidden_dim, (self.N_ORDER + 1) * 2),
             )
-        elif self.param_out == "monomial":
-            self.mat_T = self._get_T_matrix_monomial(
-                n_order=self.N_ORDER, n_step=self.future_steps
-            )  # .to(self.device)
-            self.mat_Tp = self._get_Tp_matrix_monomial(
-                n_order=self.N_ORDER, n_step=self.future_steps
-            )  # .to(self.device)
-
-            self.reg = nn.Sequential(
-                nn.Linear(self.hidden_dim, self.hidden_dim),
-                nn.LayerNorm(self.hidden_dim),
-                nn.ReLU(inplace=True),
-                nn.Linear(self.hidden_dim, self.hidden_dim),
-                nn.LayerNorm(self.hidden_dim),
-                nn.ReLU(inplace=True),
-                nn.Linear(self.hidden_dim, (self.N_ORDER + 1) * 2),
-            )
-        elif self.param_out == "none":
-            self.reg = nn.Sequential(
+        else:
+            self.reg_proj = nn.Sequential(
                 nn.Linear(self.hidden_dim, self.hidden_dim),
                 nn.LayerNorm(self.hidden_dim),
                 nn.ReLU(inplace=True),
@@ -672,8 +717,6 @@ class MLPDecoder(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Linear(self.hidden_dim, self.future_steps * 2),
             )
-        else:
-            raise NotImplementedError
 
     def _get_T_matrix_bezier(self, n_order, n_step):
         ts = np.linspace(0.0, 1.0, n_step, endpoint=True)
@@ -716,63 +759,48 @@ class MLPDecoder(nn.Module):
         return torch.Tensor(np.array(Tp).T)
 
     def forward(
-        self, agent_feats: torch.Tensor, agent_masks: List[int]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self, agent_feats: torch.Tensor, agent_masks: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, N, H = agent_feats.shape
         agent_feats = agent_feats.reshape(-1, H)
 
         agent_feats = (
-            self.multihead_proj(agent_feats).view(-1, self.k, H).permute(1, 0, 2)
+            self.mm_proj(agent_feats).view(-1, self.k, H).permute(1, 0, 2)
         )  # [k, BN, H]
 
-        cls = self.cls(agent_feats).view(self.k, -1).permute(1, 0)  # [BN, k]
-        cls = F.softmax(cls * 1.0, dim=1)  # [BN, k]
-        cls = cls.reshape(B, N, self.k)
+        logits = self.cls_proj(agent_feats).view(self.k, -1).permute(1, 0)  # [BN, k]
+        # cls = F.softmax(logits * 1.0, dim=1)  # [BN, k]
+        # cls = cls.reshape(B, N, self.k)
+        logits = logits.reshape(B, N, self.k)
 
         if self.param_out == "bezier":
-            param = self.reg(agent_feats).view(self.k, -1, self.N_ORDER + 1, 2)
+            param = self.reg_proj(agent_feats).view(self.k, -1, self.N_ORDER + 1, 2)
             param = param.permute(1, 0, 2, 3)  # e.g., [BN, 6, N_ORDER + 1, 2]
             reg = torch.matmul(self.mat_T, param)  # e.g., [BN, 6, 30, 2]
             vel = torch.matmul(self.mat_Tp, torch.diff(param, dim=2)) / (
                 self.future_steps * 0.1
             )
-        elif self.param_out == "monomial":
-            # e.g., [6, BN, N_ORDER + 1, 2]
-            param = self.reg(agent_feats).view(self.k, -1, self.N_ORDER + 1, 2)
-            param = param.permute(1, 0, 2, 3)  # e.g., [BN, 6, N_ORDER + 1, 2]
-            reg = torch.matmul(self.mat_T, param)  # e.g., [BN, 6, 30, 2]
-            vel = torch.matmul(self.mat_Tp, param[:, :, 1:, :]) / (
-                self.future_steps * 0.1
-            )
-        elif self.param_out == "none":
-            reg = self.reg(agent_feats).view(
+        else:
+            reg = self.reg_proj(agent_feats).view(
                 self.k, -1, self.future_steps, 2
-            )  # e.g., [6, BN, 30, 2]
-            reg = reg.permute(1, 0, 2, 3)  # e.g., [BN, 6, 30, 2]
-            # vel is calculated from pos
-            vel = torch.gradient(reg, dim=-2)[0] / 0.1
-
+            )  # e.g., [6, 159, 60, 2]
+            reg = reg.permute(1, 0, 2, 3)  # e.g., [159, 6, 60, 2]
+            vel = torch.gradient(reg, dim=-2)[0] / 0.1  # vel is calculated from pos
         reg = reg.reshape(B, N, *reg.shape[1:])
         vel = vel.reshape(B, N, *vel.shape[1:])
-        param = param.reshape(B, N, *param.shape[1:])
+        if self.param_out == "bezier":
+            param = param.reshape(B, N, *param.shape[1:])
 
         # print('reg: ', reg.shape, 'cls: ', cls.shape)
         # de-batchify
-        res_cls, res_reg, res_aux = [], [], []
+        res_cls, res_reg = [], []
         # for i in range(len(actor_idcs)):
         for i in range(B):
-            res_cls.append(cls[i][agent_masks[i]])
+            res_cls.append(logits[i][agent_masks[i]])
             res_reg.append(reg[i][agent_masks[i]])
+            # res_aux.append((vel[i][agent_masks[i]], param[i][agent_masks[i]]))
 
-            if self.param_out == "none":
-                res_aux.append(
-                    (vel[i][agent_masks[i]], None)
-                )  # ! None is a placeholder
-            else:
-                # List[Tuple[Tensor,...]]
-                res_aux.append((vel[i][agent_masks[i]], param[i][agent_masks[i]]))
-
-        return res_cls, res_reg, res_aux
+        return res_cls, res_reg, None
 
 
 class Simpl(nn.Module):
@@ -824,7 +852,10 @@ class Simpl(nn.Module):
 
         # * actors/lanes encoding
         agent_feats = self.actor_net(agent_inputs)  # (b, n, d, t) -> (b, n, hidden_dim)
+        agent_feats = agent_feats * agent_masks.unsqueeze(-1)
+
         lane_feats = self.lane_net(lane_inputs)  # (b, n, d, t) -> (b, n, hidden_dim)
+        lane_feats = lane_feats * lane_masks.unsqueeze(-1)
         # * fusion
         agent_feats, lane_feats = self.fusion_net(
             agent_feats,
@@ -839,17 +870,17 @@ class Simpl(nn.Module):
 
         return out
 
-    def post_process(self, out):
-        post_out = dict()
-        res_cls = out[0]
-        res_reg = out[1]
+    # def post_process(self, out):
+    #     post_out = dict()
+    #     res_cls = out[0]
+    #     res_reg = out[1]
 
-        # get prediction results for target vehicles only
-        reg = torch.stack([trajs[0] for trajs in res_reg], dim=0)
-        cls = torch.stack([probs[0] for probs in res_cls], dim=0)
+    #     # get prediction results for target vehicles only
+    #     reg = torch.stack([trajs[0] for trajs in res_reg], dim=0)
+    #     cls = torch.stack([probs[0] for probs in res_cls], dim=0)
 
-        post_out["out_raw"] = out
-        post_out["traj_pred"] = reg  # batch x n_mod x pred_len x 2
-        post_out["prob_pred"] = cls  # batch x n_mod
+    #     post_out["out_raw"] = out
+    #     post_out["traj_pred"] = reg  # batch x n_mod x pred_len x 2
+    #     post_out["prob_pred"] = cls  # batch x n_mod
 
-        return post_out
+    #     return post_out
