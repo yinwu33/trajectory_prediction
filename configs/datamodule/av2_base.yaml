@@ -12,3 +12,13 @@ persistent_workers: true
 train_size: 199908
 val_size: 24998
 test_size: 24984
+
+dataset:
+  hist_steps: 50
+  fut_steps: 60
+  max_agents: 64
+  max_lanes: 128
+  lane_seg_length: 15.0
+  num_points_per_lane: 10
+  radius: 100.0
+  min_distance_threshold: 20.0

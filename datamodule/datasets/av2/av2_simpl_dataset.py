@@ -28,8 +28,8 @@ class AV2SimplDataset(AV2BaseDataset):
         self,
         data_root: str,
         split: str = "train",
-        history_steps: int = 50,
-        future_steps: int = 60,
+        hist_steps: int = 50,
+        fut_steps: int = 60,
         max_agents: int = 64,
         max_lanes: int = 128,
         lane_seg_length: float = 15.0,
@@ -44,8 +44,8 @@ class AV2SimplDataset(AV2BaseDataset):
         super().__init__(
             data_root=data_root,
             split=split,
-            hist_steps=history_steps,
-            fut_steps=future_steps,
+            hist_steps=hist_steps,
+            fut_steps=fut_steps,
             max_agents=max_agents,
             max_lanes=max_lanes,
             lane_seg_length=lane_seg_length,
@@ -54,7 +54,7 @@ class AV2SimplDataset(AV2BaseDataset):
             min_distance_threshold=min_distance_threshold,
         )
         self.augmentation = augmentation
-        self.total_steps = history_steps + future_steps
+        self.total_steps = hist_steps + fut_steps
         self.truncate_steps = 2
 
         self.cache_dir = (
@@ -76,7 +76,7 @@ class AV2SimplDataset(AV2BaseDataset):
             else None
         )
 
-        if cache_file is not None and cache_file.exists():
+        if self.preprocess and cache_file is not None and cache_file.exists():
             try:
                 sample = torch.load(cache_file, map_location="cpu", weights_only=False)
                 return self._apply_augmentation(sample)
@@ -238,14 +238,16 @@ class AV2SimplDataset(AV2BaseDataset):
         return data
 
     def _build_rpe(self, agent_data, lane_data):
+        # TODO: consider also build [max_n, max_n, 5] rpe matrix here
+        # maybe too large?
         agent_last_pos = torch.from_numpy(agent_data["agent_last_pos"])
-        agent_last_ang = torch.from_numpy(agent_data["agent_history"][:, -1, 2:4])
+        agent_last_vec = torch.from_numpy(agent_data["agent_last_rot"][:, :, 0])
 
         lane_points = torch.from_numpy(lane_data["lane_ctrs"])
         lane_vectors = torch.from_numpy(lane_data["lane_vecs"])
 
         scene_points = torch.cat([agent_last_pos, lane_points], dim=0)
-        scene_vectors = torch.cat([agent_last_ang, lane_vectors], dim=0)
+        scene_vectors = torch.cat([agent_last_vec, lane_vectors], dim=0)
 
         dist_matrix = (scene_points.unsqueeze(0) - scene_points.unsqueeze(1)).norm(
             dim=-1
@@ -285,6 +287,8 @@ class AV2SimplDataset(AV2BaseDataset):
 
         b_agent_dict = self._actor_gather(B, new_batch)
         lane_feats, lane_masks, lane_ctrs, lane_vecs = self._lane_gather(B, new_batch)
+        
+        rpe, rpe_mask = self._rpe_gather(B, new_batch)
 
         return {
             **b_agent_dict,
@@ -292,7 +296,8 @@ class AV2SimplDataset(AV2BaseDataset):
             "lane_vecs": lane_vecs,
             "lane_feats": lane_feats,
             "lane_masks": lane_masks,
-            "rpe": new_batch["rpe"],
+            "rpe": rpe,
+            "rpe_mask": rpe_mask,
             "scenario_id": new_batch["scenario_id"],
             "city": new_batch["city"],
         }
@@ -344,8 +349,8 @@ class AV2SimplDataset(AV2BaseDataset):
             "agent_score_types": batch["agent_score_types"],
         }
 
-    def _lane_gather(self, batch_size, graphs):
-        num_lanes = graphs["num_lanes"]
+    def _lane_gather(self, batch_size, batch):
+        num_lanes = batch["num_lanes"]
         # max_lanes = max(num_lanes) if num_lanes else 0
         max_lanes = self.max_lanes
 
@@ -363,31 +368,66 @@ class AV2SimplDataset(AV2BaseDataset):
 
             feat = torch.concat(
                 [
-                    graphs["node_ctrs"][i],
-                    graphs["node_vecs"][i],
-                    graphs["intersect"][i][:, None, None].expand(
+                    batch["node_ctrs"][i],
+                    batch["node_vecs"][i],
+                    batch["intersect"][i][:, None, None].expand(
                         -1, num_nodes_per_lane, -1
                     ),
-                    graphs["lane_type"][i][:, None, :].expand(
+                    batch["lane_type"][i][:, None, :].expand(
                         -1, num_nodes_per_lane, -1
                     ),
-                    graphs["cross_left"][i][:, None, :].expand(
+                    batch["cross_left"][i][:, None, :].expand(
                         -1, num_nodes_per_lane, -1
                     ),
-                    graphs["cross_right"][i][:, None, :].expand(
+                    batch["cross_right"][i][:, None, :].expand(
                         -1, num_nodes_per_lane, -1
                     ),
-                    graphs["left"][i][:, None, None].expand(-1, num_nodes_per_lane, -1),
-                    graphs["right"][i][:, None, None].expand(
-                        -1, num_nodes_per_lane, -1
-                    ),
+                    batch["left"][i][:, None, None].expand(-1, num_nodes_per_lane, -1),
+                    batch["right"][i][:, None, None].expand(-1, num_nodes_per_lane, -1),
                 ],
                 dim=-1,
             )
 
             lane_feats[i, : num_lanes[i]] = feat
             lane_masks[i, : num_lanes[i]] = True
-            lane_ctrs[i, : num_lanes[i]] = graphs["lane_ctrs"][i]
-            lane_vecs[i, : num_lanes[i]] = graphs["lane_vecs"][i]
+            lane_ctrs[i, : num_lanes[i]] = batch["lane_ctrs"][i]
+            lane_vecs[i, : num_lanes[i]] = batch["lane_vecs"][i]
 
         return lane_feats, lane_masks, lane_ctrs, lane_vecs
+
+    def _rpe_gather(self, batch_size, batch):
+        num_agents = [x.shape[0] for x in batch["agent_history"]]
+        num_lanes = batch["num_lanes"]
+        max_agents = self.max_agents
+        max_lanes = self.max_lanes
+
+        rpe_list = batch["rpe"]
+        rpe_tensor = torch.zeros(
+            [batch_size, 5, max_agents + max_lanes, max_agents + max_lanes]
+        )
+        rpe_mask = torch.zeros(
+            [batch_size, max_agents + max_lanes, max_agents + max_lanes],
+            dtype=torch.bool,
+        )
+        for i in range(batch_size):
+            n_a = num_agents[i]
+            n_l = num_lanes[i]
+
+            rpe_tensor[i, :, :n_a, :n_a] = rpe_list[i][:, :n_a, :n_a]
+            rpe_tensor[i, :, :n_a, max_agents : max_agents + n_l] = rpe_list[i][
+                :, :n_a, n_a : n_a + n_l
+            ]
+            rpe_tensor[i, :, max_agents : max_agents + n_l, :n_a] = rpe_list[i][
+                :, n_a : n_a + n_l, :n_a
+            ]
+            rpe_tensor[
+                i, :, max_agents : max_agents + n_l, max_agents : max_agents + n_l
+            ] = rpe_list[i][:, n_a : n_a + n_l, n_a : n_a + n_l]
+
+            rpe_mask[i, :n_a, :n_a] = True
+            rpe_mask[i, :n_a, max_agents : max_agents + n_l] = True
+            rpe_mask[i, max_agents : max_agents + n_l, :n_a] = True
+            rpe_mask[
+                i, max_agents : max_agents + n_l, max_agents : max_agents + n_l
+            ] = True
+        return rpe_tensor, rpe_mask

@@ -391,47 +391,6 @@ class SftLayer(nn.Module):
         # return self.forward_sequential(node, edge, node_mask, edge_mask)
         return self.forward_parallel(node, edge, node_mask, edge_mask)
 
-    def forward_sequential(
-        self, node: Tensor, edge: Tensor, node_mask: Tensor, edge_mask: Tensor
-    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
-        # node: [B, N, D]
-        # edge: [B, N, N, D_edge]
-        # node_mask: [B, N] (True 为有效节点)
-
-        B, N, D = node.shape
-
-        x, edge, memory = self._build_memory(node, edge)
-
-        output_node = torch.zeros_like(node)
-
-        for i in range(B):
-            x_i = x[i]  # [N, D]
-            x_mha = x_i.unsqueeze(0)  # [1, N, D]
-
-            memory_mha = memory[i].transpose(0, 1)  # [N_tar, N_src, D]
-
-            m_b = node_mask[i]  # [N]
-            mask_mha = ~m_b.unsqueeze(0).expand(N, N)  # [N, N], True 表示要 Mask 掉
-
-            # --- Multi-Head Attention ---
-            x_prime, _ = self._mha_block(
-                x_mha, memory_mha, attn_mask=None, key_padding_mask=mask_mha
-            )
-
-            # --- 后处理 (Reshape & Residual) ---
-            # x_prime 从 [1, N, D] 变回 [N, D]
-            x_prime = x_prime.squeeze(0)
-
-            # 残差连接 + LayerNorm (第一部分: Attention)
-            h = self.norm2(x_i + x_prime)
-
-            # 残差连接 + LayerNorm (第二部分: FFN)
-            h = self.norm3(h + self._ff_block(h))
-
-            output_node[i] = h
-
-        return output_node, edge, None
-
     def forward_parallel(
         self, node: Tensor, edge: Tensor, node_mask: Tensor, edge_mask: Tensor
     ) -> Tensor:
@@ -451,7 +410,9 @@ class SftLayer(nn.Module):
         x_mha = x.reshape(1, B * N, D)  # [1, BN, D]
         memory_mha = memory.permute(2, 0, 1, 3).reshape(N, B * N, D)  # [N, BN, D]
 
-        mask_mha = node_mask.unsqueeze(1).expand(B, N, N).reshape(B * N, N)
+        mask_mha = edge_mask.reshape(B * N, N)  # [BN, N]
+
+        # mask_mha = node_mask.unsqueeze(1).expand(B, N, N).reshape(B * N, N)
 
         x_prime, _ = self._mha_block(
             x_mha, memory_mha, attn_mask=None, key_padding_mask=~mask_mha
@@ -512,14 +473,19 @@ class SftLayer(nn.Module):
     ) -> Tensor:
         """
         input:
-            x:                  [1, N, d_model]
-            mem:                [N, N, d_model]
+            x:                  [1, BN, d_model]
+            mem:                [N, BN, d_model]
             attn_mask:          [N, N]
-            key_padding_mask:   [N, N]
+            key_padding_mask:   [BN, N]
         output:
             :param      [1, N, d_model]
             :param      [N, N]
         """
+
+        if key_padding_mask is not None:
+            all_true_rows = key_padding_mask.all(dim=1)
+            key_padding_mask[all_true_rows] = False
+
         x, _ = self.multihead_attn(
             x,
             mem,
@@ -834,21 +800,8 @@ class Simpl(nn.Module):
         agent_masks = agent_history_masks.any(dim=-1)  # [B, Nmax]
         lane_inputs = data["lane_feats"]  # [B, Nmax, 10, 16]
         lane_masks = data["lane_masks"]  # [B, Nmax]
-        rpe_list = data["rpe"]  # list of (5, n, n)
-
-        B = agent_inputs.shape[0]
-        N_a = agent_inputs.shape[1]
-        N_l = lane_inputs.shape[1]
-        N = N_a + N_l
-
-        rpe_inputs = torch.zeros(
-            [B, 5, N, N], dtype=rpe_list[0].dtype, device=rpe_list[0].device
-        )
-        rpe_masks = torch.zeros([B, N, N], dtype=torch.bool, device=rpe_list[0].device)
-        for i in range(B):
-            num_all = rpe_list[i].shape[1]
-            rpe_inputs[i, :, :num_all, :num_all] = rpe_list[i]
-            rpe_masks[i, :num_all, :num_all] = True
+        rpe = data["rpe"]  # list of (5, n, n)
+        rpe_masks = data["rpe_mask"]  # [B, N, N]
 
         # * actors/lanes encoding
         agent_feats = self.actor_net(agent_inputs)  # (b, n, d, t) -> (b, n, hidden_dim)
@@ -862,7 +815,7 @@ class Simpl(nn.Module):
             agent_masks,
             lane_feats,
             lane_masks,
-            rpe_inputs,
+            rpe,
             rpe_masks,
         )
         # * decoding

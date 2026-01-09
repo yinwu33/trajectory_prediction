@@ -1,0 +1,14 @@
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  monitor: val/loss
+  dirpath: ${ckpt_dir}
+  filename: epoch_{epoch:02d}_loss_{val/loss:.4f}
+  save_top_k: 3
+  save_last: true
+  mode: min
+  auto_insert_metric_name: false
+
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step
+
+- _target_: callbacks.viz.TrajectoryVisualizationCallback
+  every_n_epochs: 1

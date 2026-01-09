@@ -9,8 +9,5 @@ pin_memory: false
 
 dataset:
   preprocess_dir: cache
-  history_steps: 50
-  future_steps: 60
-  min_distance_threshold: 20.0
   augmentation: false
   preprocess: true
