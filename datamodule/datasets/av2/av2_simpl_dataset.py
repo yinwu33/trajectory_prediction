@@ -271,7 +271,7 @@ class AV2SimplDataset(Dataset):
             # --- Padding ---
             # Create full length arrays filled with nan/zeros
             # Flags (1 if present)
-            valid_mask = np.zeros(self.total_steps, dtype=np.bool)
+            valid_mask = np.zeros(self.total_steps, dtype=bool)
             has_ts_mask = np.isin(i_agent_ts, ts_frame_indices)
             # Map valid timestamps to indices in the fixed array
             mapped_indices = i_agent_ts[has_ts_mask]

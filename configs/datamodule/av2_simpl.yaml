@@ -4,7 +4,7 @@ defaults:
   - av2_base
 
 batch_size: 8
-num_workers: 32
+num_workers: 8
 pin_memory: false
 
 dataset:

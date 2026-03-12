@@ -293,7 +293,7 @@ class PointAggregateBlock(nn.Module):
         out = self.norm(x + self.fc2(combined))
 
         if self.aggre_out:
-            return self._aggregate(out).squeeze()  # (n, h)
+            return self._aggregate(out).squeeze(1)  # (n, h)
         return out  # (n, 10, h)
 
 
@@ -754,7 +754,8 @@ class MLPDecoder(nn.Module):
 
         reg = reg.reshape(B, N, *reg.shape[1:])
         vel = vel.reshape(B, N, *vel.shape[1:])
-        param = param.reshape(B, N, *param.shape[1:])
+        if self.param_out != "none":
+            param = param.reshape(B, N, *param.shape[1:])
 
         # print('reg: ', reg.shape, 'cls: ', cls.shape)
         # de-batchify

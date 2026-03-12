@@ -237,7 +237,6 @@ class AV2VectorNetDataset(Dataset):
             agent_score_types.append(sorted_categories[i])
             track = scenario.tracks[track_idx]
             agent_types.append(_AGENT_TYPE_MAP.get(track.object_type, "unknown"))
-            agent_score_types.append(sorted_categories[i])
 
         agent_history_tensor = (
             torch.stack(agent_histories, dim=0)

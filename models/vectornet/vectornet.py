@@ -31,7 +31,7 @@ class SubgraphEncoder(nn.Module):
         )
         self.polyline_mlp = nn.Sequential(
             nn.Linear(hidden_dim, output_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.LayerNorm(output_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
