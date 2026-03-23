@@ -1,0 +1,23 @@
+defaults:
+  - _self_
+  - datamodule: av2_simpl
+  - model: simpl
+  - trainer: default
+  - logger: wandb
+  - optimizer: adamw
+  - experiment: null
+
+project_name: simpl
+exp_name: test
+seed: 42
+resume_from: null
+output_root_dir: ./outputs/${project_name}/${exp_name}/${now:%Y-%m-%d_%H-%M-%S}
+ckpt_dir: ${output_root_dir}/ckpt
+
+datamodule:
+  batch_size: 64
+  num_workers: 32
+
+hydra:
+  run:
+    dir: ${output_root_dir}

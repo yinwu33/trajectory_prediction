@@ -5,17 +5,8 @@ A PyTorch Lightning-based framework for motion prediction using the Argoverse 2 
 ## Environment Setup
 
 ```bash
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Install PyTorch (>= 2.0 recommended)
-pip install torch torchvision
-
-# Install PyTorch Lightning and Hydra
-pip install pytorch-lightning hydra-core omegaconf
-
-# Install Argoverse 2 API
-pip install av2==0.3.5
+# Create/update the project environment from pyproject.toml
+uv sync
 ```
 
 ## Data Preparation
@@ -36,26 +27,26 @@ The default data root can be overridden via config (see `configs/datamodule/av2_
 Train with the default VectorNet config:
 
 ```bash
-python train.py
+uv run main.py
 ```
 
 Train with SIMPL:
 
 ```bash
-python train.py --config-name config_simpl
+uv run main.py --config-name config_simpl.yaml
 ```
 
 Override config options via command line (Hydra syntax):
 
 ```bash
 # Change experiment name and batch size
-python train.py exp_name=my_exp datamodule.batch_size=128
+uv run main.py exp_name=my_exp datamodule.batch_size=128
 
 # Resume from checkpoint
-python train.py resume_from=/path/to/checkpoint.ckpt
+uv run main.py resume_from=/path/to/checkpoint.ckpt
 
 # Run a named experiment preset
-python train.py +experiment=vectornet_large
+uv run main.py +experiment=vectornet_large
 ```
 
 ## Models
@@ -78,7 +69,7 @@ python train.py +experiment=vectornet_large
 
 ```
 trajectory_prediction/
-├── train.py                    # Training entry point (Hydra + Lightning)
+├── main.py                     # Training entry point (Hydra + Lightning)
 ├── configs/                    # Hydra config files
 │   ├── config_vectornet.yaml
 │   ├── config_simpl.yaml
