@@ -1,4 +1,5 @@
 from pathlib import Path
+from dotenv import load_dotenv
 
 import torch
 
@@ -71,4 +72,5 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    load_dotenv()
     main()

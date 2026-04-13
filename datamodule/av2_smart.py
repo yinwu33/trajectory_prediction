@@ -6,8 +6,8 @@ import pytorch_lightning as pl
 from omegaconf import OmegaConf
 from torch_geometric.loader import DataLoader
 
-from .datasets.av2 import AV2SMARTDataset
-from .datasets.av2.smart_target_builder import SMARTTargetBuilder
+from ..datasets.av2 import AV2SMARTDataset
+from ..datasets.av2.smart_target_builder import SMARTTargetBuilder
 
 
 class AV2SMARTDatamodule(pl.LightningDataModule):

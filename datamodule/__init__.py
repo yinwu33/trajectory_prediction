@@ -1,11 +1,23 @@
-from .av2_vectornet import AV2VectorNetDatamodule
-from .av2_simpl import AV2SimplDatamodule
-from .av2_qcnet import AV2QCNetDatamodule
-from .av2_smart import AV2SMARTDatamodule
+from __future__ import annotations
 
-__all__ = [
-    "AV2VectorNetDatamodule",
-    "AV2SimplDatamodule",
-    "AV2QCNetDatamodule",
-    "AV2SMARTDatamodule",
-]
+from importlib import import_module
+
+
+_DATAMODULE_IMPORTS = {
+    "AV2VectorNetDatamodule": ".av2_vectornet",
+    "AV2SimplDatamodule": ".av2_simpl",
+    "AV2QCNetDatamodule": ".av2_qcnet",
+    "AV2SMARTDatamodule": ".av2_smart",
+}
+
+
+def __getattr__(name: str):
+    if name not in _DATAMODULE_IMPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(_DATAMODULE_IMPORTS[name], __name__)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+__all__ = list(_DATAMODULE_IMPORTS)

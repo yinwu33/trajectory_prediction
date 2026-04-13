@@ -9,7 +9,7 @@ from hydra.utils import to_absolute_path
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
-from .datasets.av2 import AV2VectorNetDataset
+from ..datasets.av2 import AV2VectorNetDataset
 
 
 class AV2VectorNetDatamodule(pl.LightningDataModule):

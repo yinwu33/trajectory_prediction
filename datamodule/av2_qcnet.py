@@ -6,8 +6,8 @@ import pytorch_lightning as pl
 from omegaconf import OmegaConf
 from torch_geometric.loader import DataLoader
 
-from .datasets.av2 import AV2QCNetDataset
-from .datasets.av2.qcnet_target_builder import TargetBuilder
+from ..datasets.av2 import AV2QCNetDataset
+from ..datasets.av2.qcnet_target_builder import TargetBuilder
 
 
 class AV2QCNetDatamodule(pl.LightningDataModule):

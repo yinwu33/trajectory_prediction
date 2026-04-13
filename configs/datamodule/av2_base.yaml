@@ -1,4 +1,4 @@
-data_root: ./data/
+data_root: ${oc.env:AV2_DATA_ROOT}
 
 train_split: train
 val_split: val

@@ -1,8 +1,7 @@
 - [x] agent-centric and scene-centric preprocessing
-- [ ] evaluation `eval.py`
-- [ ] waymo dataset
+- [x] waymo dataset
 - [ ] nuplan dataset
-- [ ] Simpl
+- [x] Simpl
 - [x] fix global step issue
 - [ ] simpl dataset augmentation
 - [x] lane plot, don't use centerline but boundareis
